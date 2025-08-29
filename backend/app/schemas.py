@@ -79,6 +79,7 @@ class GeneratedImageResponse(GeneratedImageBase):
     file_path: Optional[str] = None
     generation_params: Optional[dict] = None
     generated_at: datetime
+    status: Optional[str] = "approved"  # Add this line
     
     class Config:
         from_attributes = True
@@ -87,6 +88,16 @@ class TaskStartedResponse(BaseModel):
     message: str
     task_id: str
     job_id: str
+
+class ImagePreviewResponse(BaseModel):
+    task_id: str
+    preview_url: str
+    prompt: str
+    service: str
+    status: str = "preview"
+
+class ImageApprovalRequest(BaseModel):
+    preview_id: str
 
 # Video composition schemas
 class VideoCompositionSettings(BaseModel):

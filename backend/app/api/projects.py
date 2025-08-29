@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Dict
 from uuid import UUID
 import os
 import aiofiles
@@ -12,10 +12,11 @@ from ..models import Project, AudioFile, GeneratedImage, VideoOutput, Processing
 from ..schemas import (
     ProjectCreate, ProjectUpdate, ProjectResponse,
     AudioFileResponse, GeneratedImageResponse, VideoOutputResponse,
-    ImagePrompt, VideoCompositionSettings, TaskStartedResponse
+    ImagePrompt, VideoCompositionSettings, TaskStartedResponse, ImageApprovalRequest, ImagePreviewResponse
 )
 from ..tasks import generate_ai_image, compose_video, publish_to_youtube
 from ..config import settings
+from ..services.preview_cache import preview_cache
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -247,3 +248,160 @@ async def get_project_jobs(project_id: UUID, db: Session = Depends(get_db)):
         }
         for job in jobs
     ]
+
+@router.post("/{project_id}/generate-image-preview", response_model=ImagePreviewResponse)
+async def generate_image_preview(
+    project_id: UUID,
+    prompt: ImagePrompt,
+    db: Session = Depends(get_db)
+):
+    """Generate AI image preview (doesn't save to project until approved)"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    try:
+        # Generate preview image using your existing service
+        from ..services.mock_services import get_ai_service
+        ai_service = get_ai_service(prompt.service)
+        
+        # Create a temporary preview record (not saved to GeneratedImage table yet)
+        task_id = str(uuid.uuid4())
+        
+        if prompt.service == "stable_diffusion":
+            # For SD, generate and save to temporary location
+            temp_image_path = ai_service.generate_image(prompt.prompt)
+            preview_url = f"/uploads/preview_{task_id}.png"
+            
+            # Move to preview location
+            import shutil
+            preview_path = f"uploads/preview_{task_id}.png"
+            shutil.copy(temp_image_path, preview_path)
+            
+        else:
+            # For other services, get URL directly
+            preview_url = ai_service.generate_image(prompt.prompt)
+        
+        # Store preview info temporarily (you might want to use Redis for this)
+        # For now, we'll use a simple in-memory cache
+        preview_cache.set(task_id, {
+            "project_id": str(project_id),
+            "prompt": prompt.prompt,
+            "service": prompt.service,
+            "preview_url": preview_url,
+            "created_at": datetime.utcnow().isoformat()
+        })
+        
+        return ImagePreviewResponse(
+            task_id=task_id,
+            preview_url=preview_url,
+            prompt=prompt.prompt,
+            service=prompt.service
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Image generation service temporarily unavailable: {str(e)}"
+        )
+
+@router.post("/{project_id}/approve-image", response_model=GeneratedImageResponse)
+async def approve_image(
+    project_id: UUID,
+    preview_id: str,
+    db: Session = Depends(get_db)
+):
+    """Approve a preview image and save it to the project"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Get preview data from cache
+    if preview_id not in preview_cache:
+        raise HTTPException(status_code=404, detail="Preview image not found")
+    
+    preview_data = preview_cache.get([preview_id])
+    if not preview_data:
+        raise HTTPException(status_code=404, detail="Preview image not found")
+    
+    # Move from preview to permanent storage if it's a local file
+    preview_url = preview_data["preview_url"]
+    final_path = None
+    final_url = None
+    
+    if preview_url.startswith("/uploads/preview_"):
+        # It's a local file, move it to permanent location
+        preview_file_path = preview_url[1:]  # Remove leading /
+        final_filename = f"approved_{uuid.uuid4().hex[:8]}.png"
+        final_path = f"uploads/{final_filename}"
+        
+        # Move file
+        import shutil
+        shutil.move(preview_file_path, final_path)
+        final_url = f"/uploads/{final_filename}"
+    else:
+        # It's an external URL, keep as is
+        final_url = preview_url
+    
+    # Create the approved image record
+    generated_image = GeneratedImage(
+        project_id=project_id,
+        prompt=preview_data["prompt"],
+        image_url=final_url,
+        file_path=final_path,
+        generator_service=preview_data["service"],
+        generation_params={
+            "prompt": preview_data["prompt"], 
+            "service": preview_data["service"],
+            "approved_from_preview": True
+        },
+        status="approved"  # Add this field to your model
+    )
+    
+    db.add(generated_image)
+    db.commit()
+    db.refresh(generated_image)
+    
+    # Remove from preview cache
+    preview_cache.delete([preview_id])
+    
+    return generated_image
+
+@router.delete("/{project_id}/images/{image_id}")
+async def remove_image(
+    project_id: UUID,
+    image_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Remove an image from the project"""
+    image = db.query(GeneratedImage).filter(
+        GeneratedImage.id == image_id,
+        GeneratedImage.project_id == project_id
+    ).first()
+    
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    # Delete the file if it exists locally
+    if image.file_path and os.path.exists(image.file_path):
+        os.remove(image.file_path)
+    
+    # Delete from database
+    db.delete(image)
+    db.commit()
+    
+    return {"message": "Image removed successfully"}
+
+@router.get("/{project_id}/images", response_model=List[GeneratedImageResponse])
+async def get_project_images(project_id: UUID, db: Session = Depends(get_db)):
+    """Get all approved images for a project"""
+    images = db.query(GeneratedImage).filter(
+        GeneratedImage.project_id == project_id,
+        GeneratedImage.status == "approved"  # Only return approved images
+    ).all()
+    return images
+
+# # Simple in-memory cache for preview images (in production, use Redis)
+# preview_cache: Dict[str, Dict] = {}

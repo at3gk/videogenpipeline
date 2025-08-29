@@ -78,6 +78,29 @@ export const projectsApi = {
       body: JSON.stringify(settings),
     }),
   
+  generateImagePreview: (projectId: string, prompt: any) =>
+    apiRequest<{
+      task_id: string;
+      preview_url: string;
+      prompt: string;
+      service: string;
+      status: string;
+    }>(`/api/projects/${projectId}/generate-image-preview`, {
+      method: 'POST',
+      body: JSON.stringify(prompt),
+    }),
+
+  approveImage: (projectId: string, previewId: string) =>
+    apiRequest<any>(`/api/projects/${projectId}/approve-image`, {
+      method: 'POST',
+      body: JSON.stringify({ preview_id: previewId }),
+    }),
+
+  removeImage: (projectId: string, imageId: string) =>
+    apiRequest(`/api/projects/${projectId}/images/${imageId}`, {
+      method: 'DELETE',
+    }), 
+  
   getImages: (projectId: string) =>
     apiRequest<any[]>(`/api/projects/${projectId}/images`),
   

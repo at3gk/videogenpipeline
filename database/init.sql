@@ -41,7 +41,8 @@ CREATE TABLE generated_images (
     file_path TEXT,
     generator_service VARCHAR(50),
     generation_params JSONB,
-    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'approved'
 );
 
 -- Create video outputs table
@@ -78,3 +79,12 @@ INSERT INTO users (email, username) VALUES
 INSERT INTO projects (name, user_id) VALUES 
     ('Sample Project 1', (SELECT id FROM users WHERE username = 'admin')),
     ('Sample Project 2', (SELECT id FROM users WHERE username = 'admin'));
+
+-- Add status column to existing generated_images table if it doesn't exist
+DO $$ 
+BEGIN 
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='generated_images' AND column_name='status') THEN
+        ALTER TABLE generated_images ADD COLUMN status VARCHAR(20) DEFAULT 'approved';
+        UPDATE generated_images SET status = 'approved' WHERE status IS NULL;
+    END IF;
+END $$;

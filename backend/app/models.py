@@ -55,6 +55,7 @@ class GeneratedImage(Base):
     file_path = Column(Text)
     generator_service = Column(String(50))
     generation_params = Column(JSON)
+    status = Column(String(20), default='approved')  # Add this field: 'preview', 'approved', 'rejected'
     generated_at = Column(DateTime, default=datetime.utcnow)
     
     project = relationship("Project", back_populates="generated_images")
