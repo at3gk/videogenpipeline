@@ -1,0 +1,140 @@
+services:
+  api:
+    build: ./backend
+    ports: ["8000:8000"]
+    depends_on: [db, redis]
+    environment:
+      - DATABASE_URL=postgresql://postgres:musicpass123@db:5432/youtube_music
+      - REDIS_URL=redis://:redispass123@redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - USE_MOCK_SERVICES=true
+    volumes:
+      - ./uploads:/app/uploads
+      - ./shared:/app/shared
+  
+  stable-diffusion:
+    build: ./stable_diffusion
+    container_name: youtube_music_sd
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./uploads:/app/outputs  # Share uploads with main app
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s  # Give it 3 minutes to download model
+    
+  frontend:
+    build: ./frontend
+    ports: ["3000:3000"]
+    depends_on: [api]
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    
+  worker:
+    build: ./backend
+    command: celery -A app.celery_app worker --loglevel=info
+    working_dir: /app
+    depends_on: [redis, db]
+    environment:
+      - DATABASE_URL=postgresql://postgres:musicpass123@db:5432/youtube_music
+      - REDIS_URL=redis://:redispass123@redis:6379/0
+      - USE_MOCK_SERVICES=true
+    volumes:
+      - ./uploads:/app/uploads
+      - ./shared:/app/shared
+    
+  # PostgreSQL with pgAdmin web interface
+  db:
+    image: postgres:15
+    container_name: youtube_music_postgres
+    ports: ["5432:5432"]
+    environment:
+      - POSTGRES_DB=youtube_music
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=musicpass123
+    volumes: 
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d youtube_music"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    
+  # pgAdmin for PostgreSQL management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: youtube_music_pgadmin
+    ports: ["5050:80"]
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@youtubemusic.com
+      - PGADMIN_DEFAULT_PASSWORD=admin123
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./database/servers.json:/pgadmin4/servers.json
+    depends_on:
+      - db
+    
+  # Redis with RedisInsight web interface
+  redis:
+    image: redis:7-alpine
+    container_name: youtube_music_redis
+    ports: ["6379:6379"]
+    command: redis-server --requirepass redispass123 --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redispass123", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    
+  # RedisInsight for Redis management
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    container_name: youtube_music_redisinsight
+    ports: ["8001:8001"]
+    volumes:
+      - redisinsight_data:/db
+    depends_on:
+      - redis
+    
+  # MinIO for file storage with web console
+  minio:
+    image: minio/minio:latest
+    container_name: youtube_music_minio
+    ports: ["9000:9000", "9001:9001"]
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    
+  nginx:
+    image: nginx:alpine
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on: [api, frontend]
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  redis_data:
+  redisinsight_data:
+  minio_data:
