@@ -1,4 +1,3 @@
-// frontend/src/components/ImageGenerator.tsx
 import React, { useState, useEffect } from 'react';
 import { ImagePrompt, GeneratedImage } from '../types';
 import { projectsApi } from '../services/api';
@@ -32,7 +31,7 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
   const loadApprovedImages = async () => {
     try {
       const images = await projectsApi.getImages(projectId);
-      setApprovedImages(images.filter(img => img.status === 'approved'));
+      setApprovedImages(images);
     } catch (error) {
       console.error('Failed to load images:', error);
     }
@@ -54,16 +53,27 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
         quality: 'standard'
       };
 
-      // Generate preview image (don't save to project yet)
+      console.log('Generating image with prompt:', imagePrompt);
+      
+      // Generate preview image
       const result = await projectsApi.generateImagePreview(projectId, imagePrompt);
       
-      // Add to preview images
+      console.log('Preview result:', result);
+      
+      // Add to preview images with full URL
+      const baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+      const fullImageUrl = result.preview_url.startsWith('http') 
+        ? result.preview_url 
+        : `${baseUrl}${result.preview_url}`;
+      
       const previewImage = {
         id: result.task_id,
-        url: result.preview_url,
-        prompt: prompt.trim(),
-        service
+        url: fullImageUrl,
+        prompt: result.prompt,
+        service: result.service
       };
+      
+      console.log('Adding preview image:', previewImage);
       
       setPreviewImages(prev => [...prev, previewImage]);
       toast.success('Image generated! Review and approve to use in video.');
@@ -78,8 +88,12 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
 
   const handleApprove = async (previewId: string) => {
     try {
+      console.log('Approving image with ID:', previewId);
+      
       // Approve the image - this saves it to the project
       const approvedImage = await projectsApi.approveImage(projectId, previewId);
+      
+      console.log('Image approved:', approvedImage);
       
       // Remove from preview and add to approved
       setPreviewImages(prev => prev.filter(img => img.id !== previewId));
@@ -107,6 +121,25 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
       console.error('Failed to remove image:', error);
       toast.error('Failed to remove image');
     }
+  };
+
+  // Helper function to get image URL for display
+  const getImageUrl = (image: GeneratedImage) => {
+    if (image.image_url?.startsWith('http')) {
+      return image.image_url;
+    }
+    
+    const baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+    if (image.image_url?.startsWith('/')) {
+      return `${baseUrl}${image.image_url}`;
+    }
+    
+    if (image.file_path) {
+      const filename = image.file_path.split('/').pop();
+      return `${baseUrl}/uploads/${filename}`;
+    }
+    
+    return image.image_url || '';
   };
 
   return (
@@ -175,11 +208,21 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {previewImages.map((image) => (
               <div key={image.id} className="bg-white border rounded-lg p-4">
-                <img
-                  src={image.url}
-                  alt={image.prompt}
-                  className="w-full h-48 object-cover rounded-md mb-3"
-                />
+                <div className="mb-3">
+                  <img
+                    src={image.url}
+                    alt={image.prompt}
+                    className="w-full h-48 object-cover rounded-md"
+                    onError={(e) => {
+                      console.error('Image failed to load:', image.url);
+                      // Show a placeholder or error message
+                      e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZGRkIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkltYWdlIG5vdCBmb3VuZDwvdGV4dD48L3N2Zz4=';
+                    }}
+                    onLoad={() => {
+                      console.log('Image loaded successfully:', image.url);
+                    }}
+                  />
+                </div>
                 <p className="text-sm text-gray-700 mb-2 line-clamp-2">
                   "{image.prompt}"
                 </p>
@@ -216,9 +259,12 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
             {approvedImages.map((image) => (
               <div key={image.id} className="bg-white border rounded-lg p-3">
                 <img
-                  src={image.image_url || `/uploads/${image.file_path?.split('/').pop()}`}
+                  src={getImageUrl(image)}
                   alt={image.prompt}
                   className="w-full h-32 object-cover rounded-md mb-2"
+                  onError={(e) => {
+                    console.error('Approved image failed to load:', getImageUrl(image));
+                  }}
                 />
                 <p className="text-xs text-gray-700 mb-2 line-clamp-2">
                   "{image.prompt}"
@@ -239,7 +285,7 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
       {approvedImages.length === 0 && previewImages.length === 0 && (
         <div className="text-center py-8 text-gray-500">
           <svg className="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v14a2 2 0 002 2z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 002 2z" />
           </svg>
           <p>No images generated yet. Create your first image above!</p>
         </div>

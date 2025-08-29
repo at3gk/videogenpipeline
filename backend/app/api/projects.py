@@ -262,36 +262,49 @@ async def generate_image_preview(
         raise HTTPException(status_code=404, detail="Project not found")
     
     try:
+        print(f"Generating preview for project {project_id} with prompt: {prompt.prompt}")
+        
         # Generate preview image using your existing service
         from ..services.mock_services import get_ai_service
         ai_service = get_ai_service(prompt.service)
         
-        # Create a temporary preview record (not saved to GeneratedImage table yet)
+        # Create a unique task ID
         task_id = str(uuid.uuid4())
         
         if prompt.service == "stable_diffusion":
-            # For SD, generate and save to temporary location
+            # For SD, generate and get the local file path
             temp_image_path = ai_service.generate_image(prompt.prompt)
-            preview_url = f"/uploads/preview_{task_id}.png"
+            print(f"SD Generated image at: {temp_image_path}")
             
-            # Move to preview location
-            import shutil
-            preview_path = f"uploads/preview_{task_id}.png"
-            shutil.copy(temp_image_path, preview_path)
-            
+            # Create preview URL that matches your static file serving
+            # Your main.py serves /uploads as static files
+            if temp_image_path.startswith("uploads/"):
+                preview_url = f"/{temp_image_path}"
+            else:
+                # Extract just the filename
+                filename = os.path.basename(temp_image_path)
+                preview_url = f"/uploads/{filename}"
+                
         else:
-            # For other services, get URL directly
+            # For other services (DALL-E, Midjourney), get URL directly
             preview_url = ai_service.generate_image(prompt.prompt)
+            temp_image_path = None
         
-        # Store preview info temporarily (you might want to use Redis for this)
-        # For now, we'll use a simple in-memory cache
-        preview_cache.set(task_id, {
+        print(f"Preview URL: {preview_url}")
+        
+        # Store preview info using PreviewCache methods
+        preview_data = {
             "project_id": str(project_id),
             "prompt": prompt.prompt,
             "service": prompt.service,
             "preview_url": preview_url,
+            "file_path": temp_image_path,
             "created_at": datetime.utcnow().isoformat()
-        })
+        }
+        
+        # Use the .set() method
+        preview_cache.set(task_id, preview_data)
+        print(f"Stored preview data for task {task_id}")
         
         return ImagePreviewResponse(
             task_id=task_id,
@@ -301,73 +314,69 @@ async def generate_image_preview(
         )
         
     except Exception as e:
+        print(f"Error in generate_image_preview: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
         raise HTTPException(
             status_code=503, 
-            detail=f"Image generation service temporarily unavailable: {str(e)}"
+            detail=f"Image generation service error: {str(e)}"
         )
 
 @router.post("/{project_id}/approve-image", response_model=GeneratedImageResponse)
 async def approve_image(
     project_id: UUID,
-    preview_id: str,
+    request: ImageApprovalRequest,  # Use proper Pydantic model instead of Dict
     db: Session = Depends(get_db)
 ):
     """Approve a preview image and save it to the project"""
+    preview_id = request.preview_id
+    
     # Validate project exists
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    # Get preview data from cache
-    if preview_id not in preview_cache:
-        raise HTTPException(status_code=404, detail="Preview image not found")
-    
-    preview_data = preview_cache.get([preview_id])
+    # Get preview data using PreviewCache method
+    preview_data = preview_cache.get(preview_id)
     if not preview_data:
-        raise HTTPException(status_code=404, detail="Preview image not found")
+        raise HTTPException(status_code=404, detail="Preview image not found or expired")
     
-    # Move from preview to permanent storage if it's a local file
-    preview_url = preview_data["preview_url"]
-    final_path = None
-    final_url = None
-    
-    if preview_url.startswith("/uploads/preview_"):
-        # It's a local file, move it to permanent location
-        preview_file_path = preview_url[1:]  # Remove leading /
-        final_filename = f"approved_{uuid.uuid4().hex[:8]}.png"
-        final_path = f"uploads/{final_filename}"
+    try:
+        print(f"Approving preview: {preview_data}")
         
-        # Move file
-        import shutil
-        shutil.move(preview_file_path, final_path)
-        final_url = f"/uploads/{final_filename}"
-    else:
-        # It's an external URL, keep as is
-        final_url = preview_url
-    
-    # Create the approved image record
-    generated_image = GeneratedImage(
-        project_id=project_id,
-        prompt=preview_data["prompt"],
-        image_url=final_url,
-        file_path=final_path,
-        generator_service=preview_data["service"],
-        generation_params={
-            "prompt": preview_data["prompt"], 
-            "service": preview_data["service"],
-            "approved_from_preview": True
-        },
-        status="approved"  # Add this field to your model
-    )
-    
-    db.add(generated_image)
-    db.commit()
-    db.refresh(generated_image)
-    
-    # Remove from preview cache
-    preview_cache.delete([preview_id])
-    
-    return generated_image
+        # Create the approved image record
+        generated_image = GeneratedImage(
+            project_id=project_id,
+            prompt=preview_data["prompt"],
+            image_url=preview_data["preview_url"],
+            file_path=preview_data.get("file_path"),
+            generator_service=preview_data["service"],
+            generation_params={
+                "prompt": preview_data["prompt"], 
+                "service": preview_data["service"],
+                "approved_from_preview": True
+            },
+            status="approved"
+        )
+        
+        db.add(generated_image)
+        db.commit()
+        db.refresh(generated_image)
+        
+        # Remove from preview cache
+        preview_cache.delete(preview_id)
+        
+        print(f"Approved image {generated_image.id} for project {project_id}")
+        
+        return generated_image
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error approving image: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to approve image: {str(e)}")
 
 @router.delete("/{project_id}/images/{image_id}")
 async def remove_image(
