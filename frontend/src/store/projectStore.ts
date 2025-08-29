@@ -17,6 +17,7 @@ interface ProjectState {
   
   setAudioFiles: (audioFiles: AudioFile[]) => void;
   addAudioFile: (audioFile: AudioFile) => void;
+  removeAudioFile: (audioFileId: string) => void;
   
   setGeneratedImages: (images: GeneratedImage[]) => void;
   addGeneratedImage: (image: GeneratedImage) => void;
@@ -26,9 +27,14 @@ interface ProjectState {
   
   // Computed
   getProjectById: (id: string) => Project | undefined;
-  getProjectAudioFile: (projectId: string) => AudioFile | undefined;
+  getProjectAudioFiles: (projectId: string) => AudioFile[];
   getProjectImages: (projectId: string) => GeneratedImage[];
   getProjectVideos: (projectId: string) => VideoOutput[];
+  
+  // New computed properties for workflow logic
+  hasAudioFiles: (projectId: string) => boolean;
+  hasApprovedImages: (projectId: string) => boolean;
+  getProjectStatus: (projectId: string) => 'setup' | 'generating' | 'ready' | 'completed';
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -58,12 +64,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     projects: state.projects.filter(p => p.id !== projectId),
     selectedProject: state.selectedProject?.id === projectId 
       ? null 
-      : state.selectedProject
+      : state.selectedProject,
+    // Also clean up related data
+    audioFiles: state.audioFiles.filter(a => a.project_id !== projectId),
+    generatedImages: state.generatedImages.filter(i => i.project_id !== projectId),
+    videoOutputs: state.videoOutputs.filter(v => v.project_id !== projectId),
   })),
   
   setAudioFiles: (audioFiles) => set({ audioFiles }),
   addAudioFile: (audioFile) => set((state) => ({
-    audioFiles: [...state.audioFiles, audioFile]
+    audioFiles: [...state.audioFiles.filter(a => a.id !== audioFile.id), audioFile]
+  })),
+  
+  removeAudioFile: (audioFileId) => set((state) => ({
+    audioFiles: state.audioFiles.filter(a => a.id !== audioFileId)
   })),
   
   setGeneratedImages: (images) => set({ generatedImages: images }),
@@ -76,8 +90,34 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     videoOutputs: [...state.videoOutputs, video]
   })),
   
+  // Computed getters
   getProjectById: (id) => get().projects.find(p => p.id === id),
-  getProjectAudioFile: (projectId) => get().audioFiles.find(a => a.project_id === projectId),
-  getProjectImages: (projectId) => get().generatedImages.filter(i => i.project_id === projectId),
-  getProjectVideos: (projectId) => get().videoOutputs.filter(v => v.project_id === projectId),
+  
+  getProjectAudioFiles: (projectId) => 
+    get().audioFiles.filter(a => a.project_id === projectId),
+  
+  getProjectImages: (projectId) => 
+    get().generatedImages.filter(i => i.project_id === projectId),
+  
+  getProjectVideos: (projectId) => 
+    get().videoOutputs.filter(v => v.project_id === projectId),
+  
+  // New workflow helpers
+  hasAudioFiles: (projectId) => 
+    get().audioFiles.some(a => a.project_id === projectId),
+  
+  hasApprovedImages: (projectId) => 
+    get().generatedImages.some(i => i.project_id === projectId),
+  
+  getProjectStatus: (projectId) => {
+    const state = get();
+    const hasAudio = state.hasAudioFiles(projectId);
+    const hasImages = state.hasApprovedImages(projectId);
+    const hasVideos = state.videoOutputs.some(v => v.project_id === projectId);
+    
+    if (hasVideos) return 'completed';
+    if (hasAudio && hasImages) return 'ready';
+    if (hasAudio) return 'generating';
+    return 'setup';
+  }
 }));

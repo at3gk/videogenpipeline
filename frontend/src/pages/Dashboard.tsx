@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useProjectStore } from '../store/projectStore';
 import { projectsApi } from '../services/api';
-import { Project, AudioFile } from '../types';
+import { Project, AudioFile, GeneratedImage } from '../types';
 import { AudioUpload } from '../components/AudioUpload';
 import { ImageGenerator } from '../components/ImageGenerator';
 import { ProjectWorkflow } from '../components/ProjectWorkflow';
@@ -19,11 +19,20 @@ const Dashboard: React.FC = () => {
   
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
-  const [currentStep, setCurrentStep] = useState('upload');
+  const [currentStep, setCurrentStep] = useState<'upload' | 'generate' | 'compose' | 'review'>('upload');
+  const [selectedAudioFile, setSelectedAudioFile] = useState<AudioFile | null>(null);
+  const [selectedImages, setSelectedImages] = useState<GeneratedImage[]>([]);
 
   useEffect(() => {
     loadProjects();
   }, []);
+
+  useEffect(() => {
+    if (selectedProject) {
+      determineCurrentStep();
+      loadSelectedImagesCount();
+    }
+  }, [selectedProject]);
 
   const loadProjects = async () => {
     try {
@@ -32,6 +41,30 @@ const Dashboard: React.FC = () => {
     } catch (error) {
       console.error('Failed to load projects:', error);
       toast.error('Failed to load projects');
+    }
+  };
+
+  const determineCurrentStep = async () => {
+    if (!selectedProject) return;
+
+    try {
+      // Don't auto-progress anymore - always start at upload to let user choose
+      setCurrentStep('upload');
+      
+    } catch (error) {
+      console.error('Failed to determine current step:', error);
+      setCurrentStep('upload'); // Default to upload on error
+    }
+  };
+
+  const loadSelectedImagesCount = async () => {
+    if (!selectedProject) return;
+    
+    try {
+      const images = await projectsApi.getImages(selectedProject.id);
+      setSelectedImages(images);
+    } catch (error) {
+      console.error('Failed to load images:', error);
     }
   };
 
@@ -57,17 +90,39 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const handleAudioUpload = (audioFile: AudioFile) => {
-    if (audioFile && selectedProject) {
+  const handleAudioSelected = (audioFile: AudioFile | null) => {
+    if (audioFile) {
+      setSelectedAudioFile(audioFile);
       addAudioFile(audioFile);
-      setCurrentStep('generate');
-      toast.success('Audio uploaded! Now generate some images.');
+      
+      // If we have audio, check if we should move to generate step
+      if (selectedImages.length === 0) {
+        setCurrentStep('generate');
+        toast.success('Audio selected! Now select or generate images.');
+      } else {
+        setCurrentStep('compose');
+        toast.success('Audio selected! Ready to compose video.');
+      }
+    } else {
+      // Audio was deselected
+      setSelectedAudioFile(null);
+      // Stay on upload step
+      setCurrentStep('upload');
     }
   };
 
-  const handleImageGenerated = (result: any) => {
-    setCurrentStep('compose');
-    toast.success('Image generated! Now compose your video.');
+  const handleImagesSelected = (images: GeneratedImage[]) => {
+    setSelectedImages(images);
+    
+    // If we have both audio and images, move to compose step
+    if (selectedAudioFile && images.length > 0) {
+      setCurrentStep('compose');
+      toast.success(`${images.length} image${images.length !== 1 ? 's' : ''} selected! Ready to compose video.`);
+    }
+  };
+
+  const handleStepNavigation = (step: 'upload' | 'generate' | 'compose' | 'review') => {
+    setCurrentStep(step);
   };
 
   const renderStepContent = () => {
@@ -76,17 +131,37 @@ const Dashboard: React.FC = () => {
     switch (currentStep) {
       case 'upload':
         return (
-          <AudioUpload 
-            projectId={selectedProject.id} 
-            onUploadComplete={handleAudioUpload} 
-          />
+          <div className="space-y-6">
+            <div className="text-center">
+              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                Audio Setup
+              </h3>
+              <p className="text-gray-600 mb-6">
+                Listen to and select an audio file, or upload a new one to get started.
+              </p>
+            </div>
+            <AudioUpload 
+              projectId={selectedProject.id} 
+              onUploadComplete={handleAudioSelected} 
+            />
+          </div>
         );
       case 'generate':
         return (
-          <ImageGenerator 
-            projectId={selectedProject.id} 
-            onImageGenerated={handleImageGenerated} 
-          />
+          <div className="space-y-6">
+            <div className="text-center">
+              <h3 className="text-lg font-medium text-gray-900 mb-2">
+                Image Selection
+              </h3>
+              <p className="text-gray-600 mb-6">
+                Select existing images or generate new ones for your music video.
+              </p>
+            </div>
+            <ImageGenerator 
+              projectId={selectedProject.id} 
+              onImagesSelected={handleImagesSelected} 
+            />
+          </div>
         );
       case 'compose':
         return (
@@ -94,9 +169,22 @@ const Dashboard: React.FC = () => {
             <h3 className="text-lg font-medium text-gray-900 mb-4">
               Video Composition
             </h3>
-            <p className="text-gray-600">
-              Video composition feature coming soon...
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 mb-6">
+              <div className="flex items-center justify-center space-x-4 text-blue-800">
+                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>Audio: {selectedAudioFile?.filename}</span>
+                <span>•</span>
+                <span>{selectedImages.length} selected image{selectedImages.length !== 1 ? 's' : ''}</span>
+              </div>
+            </div>
+            <p className="text-gray-600 mb-6">
+              Ready to create your music video! Video composition feature will be available soon.
             </p>
+            <button className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors">
+              Compose Video (Coming Soon)
+            </button>
           </div>
         );
       case 'review':
@@ -115,13 +203,33 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const canNavigateToStep = (step: 'upload' | 'generate' | 'compose' | 'review') => {
+    switch (step) {
+      case 'upload':
+        return true; // Can always go back to upload
+      case 'generate':
+        return selectedAudioFile !== null; // Need audio to generate
+      case 'compose':
+        return selectedAudioFile !== null && selectedImages.length > 0; // Need audio + images
+      case 'review':
+        return false; // Not implemented yet
+      default:
+        return false;
+    }
+  };
+
   if (selectedProject) {
     return (
       <div className="min-h-screen bg-gray-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="mb-8">
             <button
-              onClick={() => setSelectedProject(null)}
+              onClick={() => {
+                setSelectedProject(null);
+                setCurrentStep('upload');
+                setSelectedAudioFile(null);
+                setSelectedImages([]);
+              }}
               className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             >
               <svg className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -132,10 +240,49 @@ const Dashboard: React.FC = () => {
           </div>
           
           <div className="mb-8">
-            <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            <h1 className="text-3xl font-bold text-gray-900 mb-6">
               {selectedProject.name}
             </h1>
-            <ProjectWorkflow project={selectedProject} />
+            
+            {/* Interactive Workflow Navigation */}
+            <nav className="flex items-center justify-center space-x-4 mb-8">
+              {[
+                { id: 'upload', name: 'Audio Setup', icon: '🎵' },
+                { id: 'generate', name: 'Select Images', icon: '🎨' },
+                { id: 'compose', name: 'Compose Video', icon: '🎬' },
+                { id: 'review', name: 'Review & Publish', icon: '🚀' }
+              ].map((step, stepIdx) => (
+                <div key={step.id} className="flex items-center">
+                  <button
+                    onClick={() => canNavigateToStep(step.id as any) && handleStepNavigation(step.id as any)}
+                    disabled={!canNavigateToStep(step.id as any)}
+                    className={`flex flex-col items-center p-3 rounded-lg transition-colors ${
+                      currentStep === step.id
+                        ? 'bg-blue-100 text-blue-700 border-2 border-blue-300'
+                        : canNavigateToStep(step.id as any)
+                        ? 'bg-gray-100 text-gray-700 hover:bg-gray-200 border-2 border-transparent'
+                        : 'bg-gray-50 text-gray-400 border-2 border-transparent cursor-not-allowed'
+                    }`}
+                  >
+                    <span className="text-2xl mb-2">{step.icon}</span>
+                    <span className="text-sm font-medium">{step.name}</span>
+                    {step.id === 'upload' && !selectedAudioFile && (
+                      <span className="text-xs text-orange-600 mt-1">
+                        Selection required
+                      </span>
+                    )}
+                    {step.id === 'generate' && selectedImages.length > 0 && (
+                      <span className="text-xs text-green-600 mt-1">
+                        {selectedImages.length} image{selectedImages.length !== 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </button>
+                  {stepIdx < 3 && (
+                    <div className="w-8 h-0.5 mx-2 bg-gray-300" />
+                  )}
+                </div>
+              ))}
+            </nav>
           </div>
           
           <div className="bg-white rounded-lg shadow-sm border p-6">
@@ -241,4 +388,5 @@ const Dashboard: React.FC = () => {
   );
 };
 
+// IMPORTANT: Make sure this is a default export
 export default Dashboard;

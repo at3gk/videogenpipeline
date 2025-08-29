@@ -1,3 +1,5 @@
+import { AudioFile } from "../types";
+
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
 export class ApiError extends Error {
@@ -51,6 +53,7 @@ export const projectsApi = {
       method: 'DELETE',
     }),
   
+    // Audio file methods
   uploadAudio: (projectId: string, file: File) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -65,6 +68,14 @@ export const projectsApi = {
       return response.json();
     });
   },
+
+  getAudioFiles: (projectId: string) =>
+    apiRequest<AudioFile[]>(`/api/projects/${projectId}/audio`),
+
+  removeAudioFile: (projectId: string, fileId: string) =>
+    apiRequest(`/api/projects/${projectId}/audio/${fileId}`, {
+      method: 'DELETE',
+    }),
   
   generateImage: (projectId: string, prompt: any) =>
     apiRequest<any>(`/api/projects/${projectId}/generate-image`, {

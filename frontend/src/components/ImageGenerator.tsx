@@ -5,15 +5,15 @@ import toast from 'react-hot-toast';
 
 interface ImageGeneratorProps {
   projectId: string;
-  onImageGenerated: (image: any) => void;
+  onImagesSelected: (images: GeneratedImage[]) => void;
 }
 
 export const ImageGenerator: React.FC<ImageGeneratorProps> = ({ 
   projectId, 
-  onImageGenerated 
+  onImagesSelected 
 }) => {
   const [prompt, setPrompt] = useState('');
-  const [service, setService] = useState('dalle');
+  const [service, setService] = useState('stable_diffusion');
   const [isGenerating, setIsGenerating] = useState(false);
   const [previewImages, setPreviewImages] = useState<Array<{
     id: string;
@@ -21,19 +21,31 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     prompt: string;
     service: string;
   }>>([]);
-  const [approvedImages, setApprovedImages] = useState<GeneratedImage[]>([]);
+  const [existingImages, setExistingImages] = useState<GeneratedImage[]>([]);
+  const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
+  const [showGenerateForm, setShowGenerateForm] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Load existing approved images
   useEffect(() => {
-    loadApprovedImages();
+    loadExistingImages();
   }, [projectId]);
 
-  const loadApprovedImages = async () => {
+  const loadExistingImages = async () => {
+    setIsLoading(true);
     try {
       const images = await projectsApi.getImages(projectId);
-      setApprovedImages(images);
+      setExistingImages(images);
+      
+      // Don't auto-select - let user choose
+      if (images.length === 0) {
+        setShowGenerateForm(true);
+      }
     } catch (error) {
       console.error('Failed to load images:', error);
+      setShowGenerateForm(true);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -73,10 +85,11 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
         service: result.service
       };
       
-      console.log('Adding preview image:', previewImage);
-      
       setPreviewImages(prev => [...prev, previewImage]);
-      toast.success('Image generated! Review and approve to use in video.');
+      toast.success('Image generated! Review and approve to add to collection.');
+      
+      // Reset form
+      setPrompt('');
       
     } catch (error) {
       console.error('Image generation failed:', error);
@@ -95,12 +108,11 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
       
       console.log('Image approved:', approvedImage);
       
-      // Remove from preview and add to approved
+      // Remove from preview and add to existing
       setPreviewImages(prev => prev.filter(img => img.id !== previewId));
-      setApprovedImages(prev => [...prev, approvedImage]);
+      setExistingImages(prev => [...prev, approvedImage]);
       
-      toast.success('Image approved and added to project!');
-      onImageGenerated(approvedImage);
+      toast.success('Image approved and added to collection!');
     } catch (error) {
       console.error('Failed to approve image:', error);
       toast.error('Failed to approve image');
@@ -112,11 +124,38 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     toast.success('Image rejected');
   };
 
-  const handleRemoveApproved = async (imageId: string) => {
+  const handleImageSelect = (imageId: string, selected: boolean) => {
+    const newSelected = new Set(selectedImages);
+    if (selected) {
+      newSelected.add(imageId);
+    } else {
+      newSelected.delete(imageId);
+    }
+    setSelectedImages(newSelected);
+    
+    // Get selected images and pass to parent
+    const selectedImagesList = existingImages.filter(img => newSelected.has(img.id));
+    onImagesSelected(selectedImagesList);
+    
+    if (selectedImagesList.length > 0) {
+      toast.success(`${selectedImagesList.length} image${selectedImagesList.length !== 1 ? 's' : ''} selected`);
+    }
+  };
+
+  const handleRemoveImage = async (imageId: string) => {
     try {
       await projectsApi.removeImage(projectId, imageId);
-      setApprovedImages(prev => prev.filter(img => img.id !== imageId));
-      toast.success('Image removed from project');
+      setExistingImages(prev => prev.filter(img => img.id !== imageId));
+      
+      // Remove from selection if it was selected
+      const newSelected = new Set(selectedImages);
+      newSelected.delete(imageId);
+      setSelectedImages(newSelected);
+      
+      const selectedImagesList = existingImages.filter(img => newSelected.has(img.id));
+      onImagesSelected(selectedImagesList);
+      
+      toast.success('Image removed from collection');
     } catch (error) {
       console.error('Failed to remove image:', error);
       toast.error('Failed to remove image');
@@ -142,62 +181,200 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     return image.image_url || '';
   };
 
-  return (
-    <div className="w-full max-w-4xl mx-auto space-y-8">
-      {/* Generation Form */}
-      <div className="bg-white border rounded-lg p-6">
-        <h3 className="text-lg font-medium text-gray-900 mb-4">Generate New Image</h3>
-        
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="prompt" className="block text-sm font-medium text-gray-700 mb-2">
-              Image Prompt
-            </label>
-            <textarea
-              id="prompt"
-              rows={3}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-              placeholder="Describe the image you want to generate..."
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-            />
-          </div>
-
-          <div>
-            <label htmlFor="service" className="block text-sm font-medium text-gray-700 mb-2">
-              AI Service
-            </label>
-            <select
-              id="service"
-              value={service}
-              onChange={(e) => setService(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="dalle">DALL-E 3 (Fast, High Quality)</option>
-              <option value="midjourney">Midjourney (Artistic Style)</option>
-              <option value="stable_diffusion">Stable Diffusion (Local)</option>
-            </select>
-          </div>
-
-          <button
-            onClick={handleGenerate}
-            disabled={isGenerating || !prompt.trim()}
-            className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {isGenerating ? (
-              <div className="flex items-center justify-center space-x-2">
-                <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <span>Generating...</span>
-              </div>
-            ) : (
-              'Generate Image'
-            )}
-          </button>
-        </div>
+  if (isLoading) {
+    return (
+      <div className="w-full max-w-4xl mx-auto text-center py-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+        <p className="mt-2 text-gray-600">Loading images...</p>
       </div>
+    );
+  }
+
+  return (
+    <div className="w-full max-w-6xl mx-auto space-y-8">
+      {/* Existing Images Selection */}
+      {existingImages.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-medium text-gray-900">
+              Select Images for Video ({existingImages.length} available)
+            </h3>
+            <button
+              onClick={() => setShowGenerateForm(!showGenerateForm)}
+              className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+            >
+              {showGenerateForm ? 'Cancel Generate' : '+ Generate New'}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {existingImages.map((image) => {
+              const isSelected = selectedImages.has(image.id);
+              return (
+                <div
+                  key={image.id}
+                  className={`border rounded-lg p-3 cursor-pointer transition-all ${
+                    isSelected 
+                      ? 'border-blue-500 bg-blue-50 shadow-md' 
+                      : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
+                  }`}
+                  onClick={() => handleImageSelect(image.id, !isSelected)}
+                >
+                  {/* Selection indicator */}
+                  <div className="flex items-center justify-between mb-2">
+                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+                      isSelected 
+                        ? 'border-blue-500 bg-blue-500' 
+                        : 'border-gray-300 hover:border-blue-400'
+                    }`}>
+                      {isSelected && (
+                        <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemoveImage(image.id);
+                      }}
+                      className="text-red-600 hover:text-red-800 p-1 opacity-70 hover:opacity-100"
+                      title="Remove image"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                  
+                  <img
+                    src={getImageUrl(image)}
+                    alt={image.prompt}
+                    className="w-full h-32 object-cover rounded-md mb-2"
+                    onError={(e) => {
+                      console.error('Image failed to load:', getImageUrl(image));
+                    }}
+                  />
+                  
+                  <p className="text-xs text-gray-700 mb-2 line-clamp-2">
+                    "{image.prompt}"
+                  </p>
+                  
+                  <p className="text-xs text-gray-500">
+                    Generated with {image.generator_service}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Selection Status */}
+          {selectedImages.size > 0 ? (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+              <div className="flex items-center space-x-3">
+                <svg className="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div>
+                  <p className="font-medium text-green-800">
+                    {selectedImages.size} image{selectedImages.size !== 1 ? 's' : ''} selected
+                  </p>
+                  <p className="text-sm text-green-600">
+                    Ready to proceed to video composition
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+              <div className="flex items-center space-x-3">
+                <svg className="h-6 w-6 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+                <div>
+                  <p className="font-medium text-yellow-800">
+                    No images selected
+                  </p>
+                  <p className="text-sm text-yellow-600">
+                    Please select images above or generate new ones below to continue
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Generate New Images Section */}
+      {(showGenerateForm || existingImages.length === 0) && (
+        <div className="bg-white border rounded-lg p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-medium text-gray-900">
+              {existingImages.length > 0 ? 'Generate New Images' : 'Generate Images'}
+            </h3>
+            {existingImages.length > 0 && (
+              <button
+                onClick={() => setShowGenerateForm(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+          
+          <div className="space-y-4">
+            <div>
+              <label htmlFor="prompt" className="block text-sm font-medium text-gray-700 mb-2">
+                Image Prompt
+              </label>
+              <textarea
+                id="prompt"
+                rows={3}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Describe the image you want to generate..."
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label htmlFor="service" className="block text-sm font-medium text-gray-700 mb-2">
+                AI Service
+              </label>
+              <select
+                id="service"
+                value={service}
+                onChange={(e) => setService(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="stable_diffusion">Stable Diffusion (Local)</option>
+                <option value="dalle">DALL-E 3 (Fast, High Quality)</option>
+                <option value="midjourney">Midjourney (Artistic Style)</option>
+              </select>
+            </div>
+
+            <button
+              onClick={handleGenerate}
+              disabled={isGenerating || !prompt.trim()}
+              className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isGenerating ? (
+                <div className="flex items-center justify-center space-x-2">
+                  <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  <span>Generating...</span>
+                </div>
+              ) : (
+                'Generate Image'
+              )}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Preview Images (Awaiting Approval) */}
       {previewImages.length > 0 && (
@@ -205,7 +382,7 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
           <h3 className="text-lg font-medium text-gray-900 mb-4">
             Review Generated Images
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {previewImages.map((image) => (
               <div key={image.id} className="bg-white border rounded-lg p-4">
                 <div className="mb-3">
@@ -215,11 +392,6 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                     className="w-full h-48 object-cover rounded-md"
                     onError={(e) => {
                       console.error('Image failed to load:', image.url);
-                      // Show a placeholder or error message
-                      e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZGRkIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzk5OSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkltYWdlIG5vdCBmb3VuZDwvdGV4dD48L3N2Zz4=';
-                    }}
-                    onLoad={() => {
-                      console.log('Image loaded successfully:', image.url);
                     }}
                   />
                 </div>
@@ -249,45 +421,19 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
         </div>
       )}
 
-      {/* Approved Images */}
-      {approvedImages.length > 0 && (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-6">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">
-            Approved Images ({approvedImages.length})
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {approvedImages.map((image) => (
-              <div key={image.id} className="bg-white border rounded-lg p-3">
-                <img
-                  src={getImageUrl(image)}
-                  alt={image.prompt}
-                  className="w-full h-32 object-cover rounded-md mb-2"
-                  onError={(e) => {
-                    console.error('Approved image failed to load:', getImageUrl(image));
-                  }}
-                />
-                <p className="text-xs text-gray-700 mb-2 line-clamp-2">
-                  "{image.prompt}"
-                </p>
-                <button
-                  onClick={() => handleRemoveApproved(image.id)}
-                  className="w-full px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Status Message */}
-      {approvedImages.length === 0 && previewImages.length === 0 && (
+      {/* Empty State */}
+      {existingImages.length === 0 && previewImages.length === 0 && !showGenerateForm && (
         <div className="text-center py-8 text-gray-500">
           <svg className="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 002 2z" />
           </svg>
-          <p>No images generated yet. Create your first image above!</p>
+          <p>No images available yet.</p>
+          <button
+            onClick={() => setShowGenerateForm(true)}
+            className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Generate Your First Image
+          </button>
         </div>
       )}
     </div>

@@ -130,6 +130,56 @@ async def upload_audio(
     
     return audio_file
 
+@router.get("/{project_id}/audio", response_model=List[AudioFileResponse])
+async def get_project_audio_files(project_id: UUID, db: Session = Depends(get_db)):
+    """Get all audio files for a project"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    audio_files = db.query(AudioFile).filter(AudioFile.project_id == project_id).all()
+    return audio_files
+
+@router.delete("/{project_id}/audio/{audio_id}")
+async def remove_audio_file(
+    project_id: UUID,
+    audio_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Remove an audio file from the project"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Find the audio file
+    audio_file = db.query(AudioFile).filter(
+        AudioFile.id == audio_id,
+        AudioFile.project_id == project_id
+    ).first()
+    
+    if not audio_file:
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    
+    try:
+        # Delete the physical file if it exists
+        if audio_file.file_path and os.path.exists(audio_file.file_path):
+            os.remove(audio_file.file_path)
+            print(f"Deleted file: {audio_file.file_path}")
+        
+        # Delete from database
+        db.delete(audio_file)
+        db.commit()
+        
+        print(f"Removed audio file {audio_id} from project {project_id}")
+        return {"message": "Audio file removed successfully"}
+        
+    except Exception as e:
+        db.rollback()
+        print(f"Error removing audio file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to remove audio file: {str(e)}")
+
 @router.post("/{project_id}/generate-image", response_model=TaskStartedResponse)
 async def generate_image(
     project_id: UUID,
