@@ -48,14 +48,18 @@ class AudioFileBase(BaseModel):
 class AudioFileCreate(AudioFileBase):
     file_path: str
 
-class AudioFileResponse(AudioFileBase):
+class AudioFileResponse(BaseModel):
     id: UUID
     project_id: UUID
+    filename: str
+    file_path: str  # Make this required, not optional
+    duration_seconds: Optional[float] = None
+    file_size_bytes: Optional[int] = None
+    mime_type: Optional[str] = None
     uploaded_at: datetime
     
     class Config:
         from_attributes = True
-
 # Image generation schemas
 class ImagePrompt(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=1000)

@@ -105,21 +105,35 @@ async def upload_audio(
     # Create uploads directory if it doesn't exist
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     
-    # Generate unique filename
+    # Generate unique filename but keep original extension
     file_extension = os.path.splitext(file.filename)[1]
-    filename = f"audio_{uuid.uuid4().hex[:8]}{file_extension}"
-    file_path = os.path.join(settings.UPLOAD_DIR, filename)
+    # Use a sanitized version of the original filename + UUID for uniqueness
+    import re
+    safe_name = re.sub(r'[^\w\-_\.]', '_', file.filename or 'audio')
+    base_name = os.path.splitext(safe_name)[0]
+    unique_filename = f"{base_name}_{uuid.uuid4().hex[:8]}{file_extension}"
+    
+    file_path = os.path.join(settings.UPLOAD_DIR, unique_filename)
+    
+    print(f"DEBUG: Uploading file:")
+    print(f"  Original filename: {file.filename}")
+    print(f"  Safe filename: {safe_name}")
+    print(f"  Unique filename: {unique_filename}")
+    print(f"  Full path: {file_path}")
     
     # Save file
     async with aiofiles.open(file_path, 'wb') as f:
         content = await file.read()
         await f.write(content)
     
-    # Create audio file record
+    print(f"DEBUG: File saved successfully to: {file_path}")
+    print(f"DEBUG: File exists: {os.path.exists(file_path)}")
+    
+    # Create audio file record - store the actual filename that was created
     audio_file = AudioFile(
         project_id=project_id,
-        filename=file.filename,
-        file_path=file_path,
+        filename=file.filename,  # Keep original filename for display
+        file_path=unique_filename,  # Store the actual sanitized filename that was created
         file_size_bytes=file.size,
         mime_type=file.content_type
     )
@@ -127,6 +141,11 @@ async def upload_audio(
     db.add(audio_file)
     db.commit()
     db.refresh(audio_file)
+    
+    print(f"DEBUG: Audio file record created:")
+    print(f"  ID: {audio_file.id}")
+    print(f"  filename: {audio_file.filename}")
+    print(f"  file_path: {audio_file.file_path}")
     
     return audio_file
 
@@ -139,6 +158,14 @@ async def get_project_audio_files(project_id: UUID, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="Project not found")
     
     audio_files = db.query(AudioFile).filter(AudioFile.project_id == project_id).all()
+    
+    print(f"DEBUG: Found {len(audio_files)} audio files for project {project_id}")
+    for audio_file in audio_files:
+        print(f"  - ID: {audio_file.id}")
+        print(f"  - filename: {audio_file.filename}")
+        print(f"  - file_path: {audio_file.file_path}")
+        print(f"  - file_size_bytes: {audio_file.file_size_bytes}")
+    
     return audio_files
 
 @router.delete("/{project_id}/audio/{audio_id}")
@@ -164,20 +191,42 @@ async def remove_audio_file(
     
     try:
         # Delete the physical file if it exists
-        if audio_file.file_path and os.path.exists(audio_file.file_path):
-            os.remove(audio_file.file_path)
-            print(f"Deleted file: {audio_file.file_path}")
+        if audio_file.file_path:
+            # Handle different file_path formats
+            if audio_file.file_path.startswith('uploads/'):
+                # Old format: "uploads/filename.mp3"
+                file_to_delete = audio_file.file_path
+            elif '/' in audio_file.file_path:
+                # Full path format
+                file_to_delete = audio_file.file_path
+            else:
+                # New format: just filename "filename.mp3"
+                file_to_delete = os.path.join("uploads", audio_file.file_path)
+            
+            print(f"DEBUG: Attempting to delete file: {file_to_delete}")
+            
+            if os.path.exists(file_to_delete):
+                os.remove(file_to_delete)
+                print(f"DEBUG: Successfully deleted file: {file_to_delete}")
+            else:
+                print(f"DEBUG: File not found on filesystem: {file_to_delete}")
+                # List available files for debugging
+                if os.path.exists("uploads"):
+                    available_files = os.listdir("uploads")
+                    print(f"DEBUG: Available files: {available_files}")
         
         # Delete from database
         db.delete(audio_file)
         db.commit()
         
-        print(f"Removed audio file {audio_id} from project {project_id}")
+        print(f"DEBUG: Removed audio file {audio_id} from database")
         return {"message": "Audio file removed successfully"}
         
     except Exception as e:
         db.rollback()
-        print(f"Error removing audio file: {str(e)}")
+        print(f"ERROR: Failed to remove audio file: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to remove audio file: {str(e)}")
 
 @router.post("/{project_id}/generate-image", response_model=TaskStartedResponse)
@@ -312,8 +361,6 @@ async def generate_image_preview(
         raise HTTPException(status_code=404, detail="Project not found")
     
     try:
-        print(f"Generating preview for project {project_id} with prompt: {prompt.prompt}")
-        
         # Generate preview image using your existing service
         from ..services.mock_services import get_ai_service
         ai_service = get_ai_service(prompt.service)
@@ -324,25 +371,22 @@ async def generate_image_preview(
         if prompt.service == "stable_diffusion":
             # For SD, generate and get the local file path
             temp_image_path = ai_service.generate_image(prompt.prompt)
-            print(f"SD Generated image at: {temp_image_path}")
+            print(f"Generated image at: {temp_image_path}")
             
-            # Create preview URL that matches your static file serving
-            # Your main.py serves /uploads as static files
+            # Create preview URL - this should match your static file serving
             if temp_image_path.startswith("uploads/"):
                 preview_url = f"/{temp_image_path}"
             else:
-                # Extract just the filename
+                # Handle case where path might be different
                 filename = os.path.basename(temp_image_path)
                 preview_url = f"/uploads/{filename}"
                 
         else:
-            # For other services (DALL-E, Midjourney), get URL directly
+            # For other services, get URL directly
             preview_url = ai_service.generate_image(prompt.prompt)
             temp_image_path = None
         
-        print(f"Preview URL: {preview_url}")
-        
-        # Store preview info using PreviewCache methods
+        # Store preview info using PreviewCache methods (not dictionary assignment)
         preview_data = {
             "project_id": str(project_id),
             "prompt": prompt.prompt,
@@ -352,7 +396,7 @@ async def generate_image_preview(
             "created_at": datetime.utcnow().isoformat()
         }
         
-        # Use the .set() method
+        # Use the .set() method instead of dictionary assignment
         preview_cache.set(task_id, preview_data)
         print(f"Stored preview data for task {task_id}")
         
@@ -376,25 +420,26 @@ async def generate_image_preview(
 @router.post("/{project_id}/approve-image", response_model=GeneratedImageResponse)
 async def approve_image(
     project_id: UUID,
-    request: ImageApprovalRequest,  # Use proper Pydantic model instead of Dict
+    request: Dict,  # Accept a dict with preview_id
     db: Session = Depends(get_db)
 ):
     """Approve a preview image and save it to the project"""
-    preview_id = request.preview_id
+    preview_id = request.get("preview_id")
+    
+    if not preview_id:
+        raise HTTPException(status_code=400, detail="preview_id is required")
     
     # Validate project exists
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    # Get preview data using PreviewCache method
+    # Get preview data using PreviewCache method (not dictionary access)
     preview_data = preview_cache.get(preview_id)
     if not preview_data:
         raise HTTPException(status_code=404, detail="Preview image not found or expired")
     
     try:
-        print(f"Approving preview: {preview_data}")
-        
         # Create the approved image record
         generated_image = GeneratedImage(
             project_id=project_id,
@@ -414,7 +459,7 @@ async def approve_image(
         db.commit()
         db.refresh(generated_image)
         
-        # Remove from preview cache
+        # Remove from preview cache using .delete() method
         preview_cache.delete(preview_id)
         
         print(f"Approved image {generated_image.id} for project {project_id}")
@@ -424,8 +469,6 @@ async def approve_image(
     except Exception as e:
         db.rollback()
         print(f"Error approving image: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to approve image: {str(e)}")
 
 @router.delete("/{project_id}/images/{image_id}")

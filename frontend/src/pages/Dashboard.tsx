@@ -95,14 +95,9 @@ const Dashboard: React.FC = () => {
       setSelectedAudioFile(audioFile);
       addAudioFile(audioFile);
       
-      // If we have audio, check if we should move to generate step
-      if (selectedImages.length === 0) {
-        setCurrentStep('generate');
-        toast.success('Audio selected! Now select or generate images.');
-      } else {
-        setCurrentStep('compose');
-        toast.success('Audio selected! Ready to compose video.');
-      }
+      // Always go to generate step after audio selection, regardless of existing images
+      setCurrentStep('generate');
+      toast.success('Audio selected! Now select or generate images.');
     } else {
       // Audio was deselected
       setSelectedAudioFile(null);

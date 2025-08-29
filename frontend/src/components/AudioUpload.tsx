@@ -114,11 +114,35 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
   };
 
   const getAudioUrl = (audioFile: AudioFile) => {
+    console.log('DEBUG: AudioFile object:', audioFile);
+    console.log('DEBUG: file_path:', audioFile.file_path);
+    console.log('DEBUG: filename:', audioFile.filename);
+    
     const baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
-    if (audioFile.file_path?.startsWith('/')) {
-      return `${baseUrl}${audioFile.file_path}`;
+    
+    let actualFilename = '';
+    
+    if (audioFile.file_path) {
+      // Handle different file_path formats:
+      if (audioFile.file_path.startsWith('uploads/')) {
+        // Old format: "uploads/audio_7d31044e.mp3" -> extract "audio_7d31044e.mp3"
+        actualFilename = audioFile.file_path.replace('uploads/', '');
+      } else if (audioFile.file_path.includes('/')) {
+        // Other full path format -> extract just the filename
+        actualFilename = audioFile.file_path.split('/').pop() || '';
+      } else {
+        // New format: just the filename "Raise_Your_Glasses_High_0ecd5bc8.mp3"
+        actualFilename = audioFile.file_path;
+      }
+    } else {
+      // Fallback to original filename (shouldn't happen with proper uploads)
+      actualFilename = audioFile.filename;
     }
-    return `${baseUrl}/uploads/${audioFile.file_path?.split('/').pop() || audioFile.filename}`;
+    
+    const audioUrl = `${baseUrl}/uploads/${actualFilename}`;
+    console.log('DEBUG: Actual filename:', actualFilename);
+    console.log('DEBUG: Constructed audio URL:', audioUrl);
+    return audioUrl;
   };
 
   const handlePlayAudio = (audioFile: AudioFile) => {

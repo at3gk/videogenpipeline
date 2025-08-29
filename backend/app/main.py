@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
+import urllib.parse
 
 from .database import engine, Base
 from .api import projects, health
@@ -55,13 +56,34 @@ app.include_router(health.router, prefix="/api")
 @app.get("/uploads/{filename}")
 async def serve_upload_file(filename: str):
     """Serve uploaded files with proper headers for audio playback"""
-    file_path = os.path.join("uploads", filename)
+    # Decode URL-encoded filename
+    decoded_filename = urllib.parse.unquote(filename)
+    print(f"DEBUG: Original filename: {filename}")
+    print(f"DEBUG: Decoded filename: {decoded_filename}")
     
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
+    # Try both the original and decoded filename
+    possible_paths = [
+        os.path.join("uploads", filename),
+        os.path.join("uploads", decoded_filename)
+    ]
+    
+    file_path = None
+    for path in possible_paths:
+        print(f"DEBUG: Checking path: {path}")
+        if os.path.exists(path):
+            file_path = path
+            print(f"DEBUG: Found file at: {file_path}")
+            break
+    
+    if not file_path:
+        # List all files in uploads directory for debugging
+        if os.path.exists("uploads"):
+            available_files = os.listdir("uploads")
+            print(f"DEBUG: Available files in uploads: {available_files}")
+        raise HTTPException(status_code=404, detail=f"File not found: {filename} (decoded: {decoded_filename})")
     
     # Determine media type based on file extension
-    file_ext = os.path.splitext(filename)[1].lower()
+    file_ext = os.path.splitext(decoded_filename)[1].lower()
     media_type_mapping = {
         '.mp3': 'audio/mpeg',
         '.wav': 'audio/wav',
@@ -74,6 +96,7 @@ async def serve_upload_file(filename: str):
     }
     
     media_type = media_type_mapping.get(file_ext, 'application/octet-stream')
+    print(f"DEBUG: Serving file with media_type: {media_type}")
     
     return FileResponse(
         file_path, 
