@@ -14,9 +14,21 @@ def get_db_session():
     return SessionLocal()
 
 @celery_app.task(bind=True)
-def generate_ai_image(self, project_id: str, prompt: str, service: str = "dalle"):
-    """Generate AI image task"""
+def generate_ai_image(self, project_id: str, prompt: str, service: str = "dalle", **kwargs):
+    """Generate AI image task with parameters"""
     db = get_db_session()
+    
+    # Extract parameters that might come from the frontend
+    size = kwargs.get('size', '1024x1024')
+    quality = kwargs.get('quality', '25')
+    
+    print(f"DEBUG - generate_ai_image called with:")
+    print(f"  project_id: {project_id}")
+    print(f"  prompt: {prompt}")
+    print(f"  service: {service}")
+    print(f"  size: {size}")
+    print(f"  quality: {quality}")
+    print(f"  additional kwargs: {kwargs}")
     
     try:
         # Update job status
@@ -26,27 +38,40 @@ def generate_ai_image(self, project_id: str, prompt: str, service: str = "dalle"
         ai_service = get_ai_service(service)
         current_task.update_state(state='PROGRESS', meta={'progress': 30})
         
-        # Generate image
+        # Generate image with parameters
         if hasattr(ai_service, 'generate_image'):
             if service == "stable_diffusion":
-                image_path = ai_service.generate_image(prompt)
+                # Pass all parameters to Stable Diffusion
+                image_path = ai_service.generate_image(
+                    prompt, 
+                    resolution=size,
+                    steps=quality,
+                    **kwargs  # Pass any additional parameters
+                )
                 image_url = None
             else:
+                # For other services, use the standard parameters
                 image_path = None
-                image_url = ai_service.generate_image(prompt)
+                image_url = ai_service.generate_image(prompt, size=size, quality=quality)
         else:
             raise Exception(f"Service {service} not supported")
         
         current_task.update_state(state='PROGRESS', meta={'progress': 70})
         
-        # Save to database
+        # Save to database with generation parameters
         generated_image = GeneratedImage(
             project_id=project_id,
             prompt=prompt,
             image_url=image_url,
             file_path=image_path,
             generator_service=service,
-            generation_params={"prompt": prompt, "service": service}
+            generation_params={
+                "prompt": prompt, 
+                "service": service,
+                "size": size,
+                "quality": quality,
+                **kwargs
+            }
         )
         
         db.add(generated_image)

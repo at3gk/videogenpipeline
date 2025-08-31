@@ -49,6 +49,9 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     }
   };
 
+  const [resolution, setResolution] = useState('1024x1024');
+  const [qualitySteps, setQualitySteps] = useState('25');
+
   const handleGenerate = async () => {
     if (!prompt.trim()) {
       toast.error('Please enter a prompt');
@@ -61,11 +64,11 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
       const imagePrompt: ImagePrompt = {
         prompt: prompt.trim(),
         service,
-        size: '1024x1024',
-        quality: 'standard'
+        size: resolution,  // This will be passed as 'size'
+        quality: qualitySteps  // This will be passed as 'quality'
       };
 
-      console.log('Generating image with prompt:', imagePrompt);
+      console.log('Generating image with parameters:', imagePrompt);
       
       // Generate preview image
       const result = await projectsApi.generateImagePreview(projectId, imagePrompt);
@@ -385,7 +388,11 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Resolution
                   </label>
-                  <select className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                  <select 
+                    value = {resolution}
+                    onChange={(e) => setResolution(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                    >
                     <option value="512x512">512x512 (Fast)</option>
                     <option value="768x768" selected>768x768 (Balanced)</option>
                     <option value="1024x1024">1024x1024 (High Quality)</option>
@@ -395,7 +402,11 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Quality Steps
                   </label>
-                  <select className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                  <select 
+                    value = {qualitySteps}
+                    onChange={(e) => setQualitySteps(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                    >
                     <option value="15">15 (Fast)</option>
                     <option value="25" selected>25 (Balanced)</option>
                     <option value="50">50 (High Quality)</option>

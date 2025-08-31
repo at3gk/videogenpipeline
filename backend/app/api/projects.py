@@ -361,9 +361,13 @@ async def generate_image_preview(
         raise HTTPException(status_code=404, detail="Project not found")
     
     try:
-        print(f"Generating preview for project {project_id} with prompt: {prompt.prompt}")
+        print(f"Generating preview for project {project_id}")
+        print(f"Prompt: {prompt.prompt}")
+        print(f"Service: {prompt.service}")
+        print(f"Size: {prompt.size}")
+        print(f"Quality: {prompt.quality}")
         
-        # Generate preview image using your existing service
+        # Generate preview image using your existing service with parameters
         from ..services.mock_services import get_ai_service
         ai_service = get_ai_service(prompt.service)
         
@@ -371,37 +375,42 @@ async def generate_image_preview(
         task_id = str(uuid.uuid4())
         
         if prompt.service == "stable_diffusion":
-            # For SD, generate and get the local file path
-            temp_image_path = ai_service.generate_image(prompt.prompt)
+            # Pass the parameters from the frontend
+            temp_image_path = ai_service.generate_image(
+                prompt.prompt,
+                resolution=prompt.size,  # Pass resolution
+                steps=prompt.quality,    # Pass quality steps
+                size=prompt.size,        # Also pass as size for compatibility
+                quality=prompt.quality   # Also pass as quality for compatibility
+            )
             print(f"SD Generated image at: {temp_image_path}")
             
-            # Create preview URL that matches your static file serving
-            # Your main.py serves /uploads as static files
+            # Create preview URL
             if temp_image_path.startswith("uploads/"):
                 preview_url = f"/{temp_image_path}"
             else:
-                # Extract just the filename
                 filename = os.path.basename(temp_image_path)
                 preview_url = f"/uploads/{filename}"
                 
         else:
-            # For other services (DALL-E, Midjourney), get URL directly
-            preview_url = ai_service.generate_image(prompt.prompt)
+            # For other services (DALL-E, Midjourney)
+            preview_url = ai_service.generate_image(prompt.prompt, size=prompt.size, quality=prompt.quality)
             temp_image_path = None
         
         print(f"Preview URL: {preview_url}")
         
-        # Store preview info using PreviewCache methods
+        # Store preview info
         preview_data = {
             "project_id": str(project_id),
             "prompt": prompt.prompt,
             "service": prompt.service,
+            "size": prompt.size,
+            "quality": prompt.quality,
             "preview_url": preview_url,
             "file_path": temp_image_path,
             "created_at": datetime.utcnow().isoformat()
         }
         
-        # Use the .set() method
         preview_cache.set(task_id, preview_data)
         print(f"Stored preview data for task {task_id}")
         
