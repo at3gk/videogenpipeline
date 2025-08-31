@@ -20,16 +20,19 @@ services:
     ports:
       - "7860:7860"
     volumes:
-      - ./uploads:/app/outputs  # Share uploads with main app
+      - ./uploads:/app/outputs
+      - huggingface_cache:/root/.cache/huggingface
     environment:
       - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+    runtime: nvidia  # Add this line
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7860/health"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 180s  # Give it 3 minutes to download model
+      start_period: 300s
     
   frontend:
     build: ./frontend
@@ -138,3 +141,4 @@ volumes:
   redis_data:
   redisinsight_data:
   minio_data:
+  huggingface_cache:

@@ -57,10 +57,10 @@ class StableDiffusionService:
             
             payload = {
                 "prompt": prompt,
-                "negative_prompt": "blurry, low quality",
-                "steps": 15,  # Faster generation
-                "width": 512,
-                "height": 512
+                "negative_prompt": "blurry, low quality, low resolution, oversaturated",
+                "steps": 20,  # Faster generation
+                "width": 550,
+                "height": 550
             }
             
             response = requests.post(

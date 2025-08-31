@@ -119,9 +119,33 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     }
   };
 
-  const handleReject = (previewId: string) => {
-    setPreviewImages(prev => prev.filter(img => img.id !== previewId));
-    toast.success('Image rejected');
+  const handleReject = async (previewId: string) => {
+    try {
+      // Find the preview image to get the file path
+      const previewImage = previewImages.find(img => img.id === previewId);
+      
+      if (previewImage) {
+        // If it's a local file (from stable diffusion), we need to delete it
+        if (previewImage.url.includes('/uploads/')) {
+          console.log('Deleting rejected preview file:', previewImage.url);
+          
+          // Call backend to delete the preview file
+          try {
+            await projectsApi.deletePreviewImage(projectId, previewId);
+          } catch (error) {
+            console.error('Failed to delete preview file:', error);
+            // Continue with UI update even if file deletion failed
+          }
+        }
+      }
+      
+      // Remove from preview list
+      setPreviewImages(prev => prev.filter(img => img.id !== previewId));
+      toast.success('Image rejected and removed');
+    } catch (error) {
+      console.error('Error rejecting image:', error);
+      toast.error('Error rejecting image');
+    }
   };
 
   const handleImageSelect = (imageId: string, selected: boolean) => {
@@ -349,11 +373,36 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                 onChange={(e) => setService(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
               >
-                <option value="stable_diffusion">Stable Diffusion (Local)</option>
+                <option value="stable_diffusion">Stable Diffusion (Local - GPU)</option>
                 <option value="dalle">DALL-E 3 (Fast, High Quality)</option>
                 <option value="midjourney">Midjourney (Artistic Style)</option>
               </select>
             </div>
+
+            {service === 'stable_diffusion' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Resolution
+                  </label>
+                  <select className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <option value="512x512">512x512 (Fast)</option>
+                    <option value="768x768" selected>768x768 (Balanced)</option>
+                    <option value="1024x1024">1024x1024 (High Quality)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Quality Steps
+                  </label>
+                  <select className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500">
+                    <option value="15">15 (Fast)</option>
+                    <option value="25" selected>25 (Balanced)</option>
+                    <option value="50">50 (High Quality)</option>
+                  </select>
+                </div>
+              </div>
+            )}
 
             <button
               onClick={handleGenerate}

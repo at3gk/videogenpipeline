@@ -361,6 +361,8 @@ async def generate_image_preview(
         raise HTTPException(status_code=404, detail="Project not found")
     
     try:
+        print(f"Generating preview for project {project_id} with prompt: {prompt.prompt}")
+        
         # Generate preview image using your existing service
         from ..services.mock_services import get_ai_service
         ai_service = get_ai_service(prompt.service)
@@ -371,22 +373,25 @@ async def generate_image_preview(
         if prompt.service == "stable_diffusion":
             # For SD, generate and get the local file path
             temp_image_path = ai_service.generate_image(prompt.prompt)
-            print(f"Generated image at: {temp_image_path}")
+            print(f"SD Generated image at: {temp_image_path}")
             
-            # Create preview URL - this should match your static file serving
+            # Create preview URL that matches your static file serving
+            # Your main.py serves /uploads as static files
             if temp_image_path.startswith("uploads/"):
                 preview_url = f"/{temp_image_path}"
             else:
-                # Handle case where path might be different
+                # Extract just the filename
                 filename = os.path.basename(temp_image_path)
                 preview_url = f"/uploads/{filename}"
                 
         else:
-            # For other services, get URL directly
+            # For other services (DALL-E, Midjourney), get URL directly
             preview_url = ai_service.generate_image(prompt.prompt)
             temp_image_path = None
         
-        # Store preview info using PreviewCache methods (not dictionary assignment)
+        print(f"Preview URL: {preview_url}")
+        
+        # Store preview info using PreviewCache methods
         preview_data = {
             "project_id": str(project_id),
             "prompt": prompt.prompt,
@@ -396,7 +401,7 @@ async def generate_image_preview(
             "created_at": datetime.utcnow().isoformat()
         }
         
-        # Use the .set() method instead of dictionary assignment
+        # Use the .set() method
         preview_cache.set(task_id, preview_data)
         print(f"Stored preview data for task {task_id}")
         
@@ -416,7 +421,6 @@ async def generate_image_preview(
             status_code=503, 
             detail=f"Image generation service error: {str(e)}"
         )
-
 @router.post("/{project_id}/approve-image", response_model=GeneratedImageResponse)
 async def approve_image(
     project_id: UUID,

@@ -107,6 +107,12 @@ export const projectsApi = {
       body: JSON.stringify({ preview_id: previewId }),
     }),
 
+  deletePreviewImage: (projectId: string, previewId: string) =>
+    apiRequest(`/api/projects/${projectId}/reject-image`, {
+      method: 'POST',
+      body: JSON.stringify({ preview_id: previewId }),
+    }),
+
   removeImage: (projectId: string, imageId: string) =>
     apiRequest(`/api/projects/${projectId}/images/${imageId}`, {
       method: 'DELETE',
