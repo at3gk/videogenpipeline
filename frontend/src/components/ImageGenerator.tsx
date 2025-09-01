@@ -1,11 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { ImagePrompt, GeneratedImage } from '../types';
 import { projectsApi } from '../services/api';
+import { ImageModal } from './ImageModal';
 import toast from 'react-hot-toast';
 
 interface ImageGeneratorProps {
   projectId: string;
   onImagesSelected: (images: GeneratedImage[]) => void;
+}
+
+interface PreviewImage {
+  id: string;
+  url: string;
+  prompt: string;
+  service: string;
+  resolution?: string;
+  steps?: number;
+  seed?: number;
 }
 
 export const ImageGenerator: React.FC<ImageGeneratorProps> = ({ 
@@ -14,17 +25,21 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
 }) => {
   const [prompt, setPrompt] = useState('');
   const [service, setService] = useState('stable_diffusion');
+  const [resolution, setResolution] = useState('1024x1024');
+  const [qualitySteps, setQualitySteps] = useState('25');
+  const [numImages, setNumImages] = useState(2); // New: number of images to generate
   const [isGenerating, setIsGenerating] = useState(false);
-  const [previewImages, setPreviewImages] = useState<Array<{
-    id: string;
-    url: string;
-    prompt: string;
-    service: string;
-  }>>([]);
+  const [previewImages, setPreviewImages] = useState<PreviewImage[]>([]);
   const [existingImages, setExistingImages] = useState<GeneratedImage[]>([]);
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
   const [showGenerateForm, setShowGenerateForm] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  
+  // Modal state
+  const [modalImage, setModalImage] = useState<{
+    url: string;
+    data: any;
+  } | null>(null);
 
   // Load existing approved images
   useEffect(() => {
@@ -37,7 +52,6 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
       const images = await projectsApi.getImages(projectId);
       setExistingImages(images);
       
-      // Don't auto-select - let user choose
       if (images.length === 0) {
         setShowGenerateForm(true);
       }
@@ -49,9 +63,6 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     }
   };
 
-  const [resolution, setResolution] = useState('1024x1024');
-  const [qualitySteps, setQualitySteps] = useState('25');
-
   const handleGenerate = async () => {
     if (!prompt.trim()) {
       toast.error('Please enter a prompt');
@@ -61,35 +72,54 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     setIsGenerating(true);
     
     try {
-      const imagePrompt: ImagePrompt = {
-        prompt: prompt.trim(),
-        service,
-        size: resolution,  // This will be passed as 'size'
-        quality: qualitySteps  // This will be passed as 'quality'
-      };
+      console.log(`Generating ${numImages} images...`);
+      
+      // Generate multiple preview images
+      const generatedPreviews: PreviewImage[] = [];
+      
+      for (let i = 0; i < numImages; i++) {
+        try {
+          const imagePrompt: ImagePrompt = {
+            prompt: prompt.trim(),
+            service,
+            size: resolution,
+            quality: qualitySteps
+          };
 
-      console.log('Generating image with parameters:', imagePrompt);
+          console.log(`Generating image ${i + 1}/${numImages}:`, imagePrompt);
+          
+          const result = await projectsApi.generateImagePreview(projectId, imagePrompt);
+          
+          const baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+          const fullImageUrl = result.preview_url.startsWith('http') 
+            ? result.preview_url 
+            : `${baseUrl}${result.preview_url}`;
+          
+          const previewImage: PreviewImage = {
+            id: result.task_id,
+            url: fullImageUrl,
+            prompt: result.prompt,
+            service: result.service,
+            resolution: resolution,
+            steps: parseInt(qualitySteps),
+            seed: Math.floor(Math.random() * 1000000) + i // Simple seed variation
+          };
+          
+          generatedPreviews.push(previewImage);
+          console.log(`Generated preview ${i + 1}:`, previewImage);
+          
+        } catch (error) {
+          console.error(`Failed to generate image ${i + 1}:`, error);
+          toast.error(`Failed to generate image ${i + 1}`);
+        }
+      }
       
-      // Generate preview image
-      const result = await projectsApi.generateImagePreview(projectId, imagePrompt);
-      
-      console.log('Preview result:', result);
-      
-      // Add to preview images with full URL
-      const baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
-      const fullImageUrl = result.preview_url.startsWith('http') 
-        ? result.preview_url 
-        : `${baseUrl}${result.preview_url}`;
-      
-      const previewImage = {
-        id: result.task_id,
-        url: fullImageUrl,
-        prompt: result.prompt,
-        service: result.service
-      };
-      
-      setPreviewImages(prev => [...prev, previewImage]);
-      toast.success('Image generated! Review and approve to add to collection.');
+      if (generatedPreviews.length > 0) {
+        setPreviewImages(prev => [...prev, ...generatedPreviews]);
+        toast.success(`Generated ${generatedPreviews.length} image${generatedPreviews.length !== 1 ? 's' : ''}! Review and approve to add to collection.`);
+      } else {
+        toast.error('Failed to generate any images');
+      }
       
       // Reset form
       setPrompt('');
@@ -106,12 +136,9 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     try {
       console.log('Approving image with ID:', previewId);
       
-      // Approve the image - this saves it to the project
       const approvedImage = await projectsApi.approveImage(projectId, previewId);
-      
       console.log('Image approved:', approvedImage);
       
-      // Remove from preview and add to existing
       setPreviewImages(prev => prev.filter(img => img.id !== previewId));
       setExistingImages(prev => [...prev, approvedImage]);
       
@@ -124,25 +151,18 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
 
   const handleReject = async (previewId: string) => {
     try {
-      // Find the preview image to get the file path
       const previewImage = previewImages.find(img => img.id === previewId);
       
-      if (previewImage) {
-        // If it's a local file (from stable diffusion), we need to delete it
-        if (previewImage.url.includes('/uploads/')) {
-          console.log('Deleting rejected preview file:', previewImage.url);
-          
-          // Call backend to delete the preview file
-          try {
-            await projectsApi.deletePreviewImage(projectId, previewId);
-          } catch (error) {
-            console.error('Failed to delete preview file:', error);
-            // Continue with UI update even if file deletion failed
-          }
+      if (previewImage && previewImage.url.includes('/uploads/')) {
+        console.log('Deleting rejected preview file:', previewImage.url);
+        
+        try {
+          await projectsApi.deletePreviewImage(projectId, previewId);
+        } catch (error) {
+          console.error('Failed to delete preview file:', error);
         }
       }
       
-      // Remove from preview list
       setPreviewImages(prev => prev.filter(img => img.id !== previewId));
       toast.success('Image rejected and removed');
     } catch (error) {
@@ -160,7 +180,6 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     }
     setSelectedImages(newSelected);
     
-    // Get selected images and pass to parent
     const selectedImagesList = existingImages.filter(img => newSelected.has(img.id));
     onImagesSelected(selectedImagesList);
     
@@ -174,7 +193,6 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
       await projectsApi.removeImage(projectId, imageId);
       setExistingImages(prev => prev.filter(img => img.id !== imageId));
       
-      // Remove from selection if it was selected
       const newSelected = new Set(selectedImages);
       newSelected.delete(imageId);
       setSelectedImages(newSelected);
@@ -189,7 +207,6 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     }
   };
 
-  // Helper function to get image URL for display
   const getImageUrl = (image: GeneratedImage) => {
     if (image.image_url?.startsWith('http')) {
       return image.image_url;
@@ -206,6 +223,14 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     }
     
     return image.image_url || '';
+  };
+
+  const openModal = (imageUrl: string, imageData: any) => {
+    setModalImage({ url: imageUrl, data: imageData });
+  };
+
+  const closeModal = () => {
+    setModalImage(null);
   };
 
   if (isLoading) {
@@ -237,29 +262,32 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {existingImages.map((image) => {
               const isSelected = selectedImages.has(image.id);
+              const imageUrl = getImageUrl(image);
+              
               return (
                 <div
                   key={image.id}
-                  className={`border rounded-lg p-3 cursor-pointer transition-all ${
+                  className={`border rounded-lg p-3 transition-all ${
                     isSelected 
                       ? 'border-blue-500 bg-blue-50 shadow-md' 
                       : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
                   }`}
-                  onClick={() => handleImageSelect(image.id, !isSelected)}
                 >
-                  {/* Selection indicator */}
                   <div className="flex items-center justify-between mb-2">
-                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                      isSelected 
-                        ? 'border-blue-500 bg-blue-500' 
-                        : 'border-gray-300 hover:border-blue-400'
-                    }`}>
+                    <button
+                      onClick={() => handleImageSelect(image.id, !isSelected)}
+                      className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+                        isSelected 
+                          ? 'border-blue-500 bg-blue-500' 
+                          : 'border-gray-300 hover:border-blue-400'
+                      }`}
+                    >
                       {isSelected && (
                         <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                         </svg>
                       )}
-                    </div>
+                    </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -275,11 +303,18 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                   </div>
                   
                   <img
-                    src={getImageUrl(image)}
+                    src={imageUrl}
                     alt={image.prompt}
-                    className="w-full h-32 object-cover rounded-md mb-2"
+                    className="w-full h-32 object-cover rounded-md mb-2 cursor-pointer hover:opacity-90 transition-opacity"
+                    onClick={() => openModal(imageUrl, {
+                      prompt: image.prompt,
+                      service: image.generator_service,
+                      resolution: image.generation_params?.size,
+                      steps: image.generation_params?.quality,
+                      seed: image.generation_params?.seed
+                    })}
                     onError={(e) => {
-                      console.error('Image failed to load:', getImageUrl(image));
+                      console.error('Image failed to load:', imageUrl);
                     }}
                   />
                   
@@ -366,20 +401,40 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
               />
             </div>
 
-            <div>
-              <label htmlFor="service" className="block text-sm font-medium text-gray-700 mb-2">
-                AI Service
-              </label>
-              <select
-                id="service"
-                value={service}
-                onChange={(e) => setService(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="stable_diffusion">Stable Diffusion (Local - GPU)</option>
-                <option value="dalle">DALL-E 3 (Fast, High Quality)</option>
-                <option value="midjourney">Midjourney (Artistic Style)</option>
-              </select>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="service" className="block text-sm font-medium text-gray-700 mb-2">
+                  AI Service
+                </label>
+                <select
+                  id="service"
+                  value={service}
+                  onChange={(e) => setService(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="stable_diffusion">Stable Diffusion (Local - GPU)</option>
+                  <option value="dalle">DALL-E 3 (Fast, High Quality)</option>
+                  <option value="midjourney">Midjourney (Artistic Style)</option>
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="numImages" className="block text-sm font-medium text-gray-700 mb-2">
+                  Number of Images
+                </label>
+                <select
+                  id="numImages"
+                  value={numImages}
+                  onChange={(e) => setNumImages(parseInt(e.target.value))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value={1}>1 Image</option>
+                  <option value={2}>2 Images</option>
+                  <option value={3}>3 Images</option>
+                  <option value={4}>4 Images</option>
+                  <option value={6}>6 Images</option>
+                </select>
+              </div>
             </div>
 
             {service === 'stable_diffusion' && (
@@ -389,12 +444,12 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                     Resolution
                   </label>
                   <select 
-                    value = {resolution}
+                    value={resolution}
                     onChange={(e) => setResolution(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                    >
+                  >
                     <option value="512x512">512x512 (Fast)</option>
-                    <option value="768x768" selected>768x768 (Balanced)</option>
+                    <option value="768x768">768x768 (Balanced)</option>
                     <option value="1024x1024">1024x1024 (High Quality)</option>
                   </select>
                 </div>
@@ -403,12 +458,12 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                     Quality Steps
                   </label>
                   <select 
-                    value = {qualitySteps}
+                    value={qualitySteps}
                     onChange={(e) => setQualitySteps(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                    >
+                  >
                     <option value="15">15 (Fast)</option>
-                    <option value="25" selected>25 (Balanced)</option>
+                    <option value="25">25 (Balanced)</option>
                     <option value="50">50 (High Quality)</option>
                   </select>
                 </div>
@@ -426,10 +481,10 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>
-                  <span>Generating...</span>
+                  <span>Generating {numImages} image{numImages !== 1 ? 's' : ''}...</span>
                 </div>
               ) : (
-                'Generate Image'
+                `Generate ${numImages} Image${numImages !== 1 ? 's' : ''}`
               )}
             </button>
           </div>
@@ -440,7 +495,7 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
       {previewImages.length > 0 && (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
           <h3 className="text-lg font-medium text-gray-900 mb-4">
-            Review Generated Images
+            Review Generated Images ({previewImages.length} pending approval)
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {previewImages.map((image) => (
@@ -449,18 +504,28 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                   <img
                     src={image.url}
                     alt={image.prompt}
-                    className="w-full h-48 object-cover rounded-md"
+                    className="w-full h-48 object-cover rounded-md cursor-pointer hover:opacity-90 transition-opacity"
+                    onClick={() => openModal(image.url, {
+                      prompt: image.prompt,
+                      service: image.service,
+                      resolution: image.resolution,
+                      steps: image.steps,
+                      seed: image.seed
+                    })}
                     onError={(e) => {
-                      console.error('Image failed to load:', image.url);
+                      console.error('Preview image failed to load:', image.url);
                     }}
                   />
                 </div>
                 <p className="text-sm text-gray-700 mb-2 line-clamp-2">
                   "{image.prompt}"
                 </p>
-                <p className="text-xs text-gray-500 mb-3">
-                  Generated with {image.service}
-                </p>
+                <div className="text-xs text-gray-500 mb-3 space-y-1">
+                  <div>Generated with {image.service}</div>
+                  {image.resolution && <div>Resolution: {image.resolution}</div>}
+                  {image.steps && <div>Steps: {image.steps}</div>}
+                  {image.seed && <div>Seed: {image.seed}</div>}
+                </div>
                 <div className="flex space-x-2">
                   <button
                     onClick={() => handleApprove(image.id)}
@@ -492,9 +557,19 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
             onClick={() => setShowGenerateForm(true)}
             className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
-            Generate Your First Image
+            Generate Your First Images
           </button>
         </div>
+      )}
+
+      {/* Image Modal */}
+      {modalImage && (
+        <ImageModal
+          isOpen={true}
+          onClose={closeModal}
+          imageUrl={modalImage.url}
+          imageData={modalImage.data}
+        />
       )}
     </div>
   );

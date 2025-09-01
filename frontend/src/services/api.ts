@@ -100,7 +100,23 @@ export const projectsApi = {
       method: 'POST',
       body: JSON.stringify(prompt),
     }),
-
+  
+  // New: Batch image generation
+  generateImageBatchPreview: (projectId: string, promptData: any, numImages: number) =>
+    apiRequest<Array<{
+      task_id: string;
+      preview_url: string;
+      prompt: string;
+      service: string;
+      status: string;
+    }>>(`/api/projects/${projectId}/generate-image-batch-preview`, {
+      method: 'POST',
+      body: JSON.stringify({
+        prompt: promptData,
+        num_images: numImages
+      }),
+    }),
+    
   approveImage: (projectId: string, previewId: string) =>
     apiRequest<any>(`/api/projects/${projectId}/approve-image`, {
       method: 'POST',

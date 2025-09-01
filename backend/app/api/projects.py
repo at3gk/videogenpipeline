@@ -430,6 +430,139 @@ async def generate_image_preview(
             status_code=503, 
             detail=f"Image generation service error: {str(e)}"
         )
+
+@router.post("/{project_id}/generate-image-batch-preview", response_model=List[ImagePreviewResponse])
+async def generate_image_batch_preview(
+    project_id: UUID,
+    request: Dict,  # Contains prompt data + num_images
+    db: Session = Depends(get_db)
+):
+    """Generate multiple AI image previews at once"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    try:
+        # Extract parameters
+        prompt_data = request.get('prompt', {})
+        num_images = request.get('num_images', 1)
+        
+        print(f"Generating {num_images} previews for project {project_id}")
+        print(f"Prompt data: {prompt_data}")
+        
+        # Validate num_images
+        num_images = min(max(1, int(num_images)), 6)  # Limit to 1-6 images
+        
+        # Generate multiple preview images
+        from ..services.mock_services import get_ai_service
+        ai_service = get_ai_service(prompt_data.get('service', 'stable_diffusion'))
+        
+        preview_responses = []
+        
+        if prompt_data.get('service') == "stable_diffusion":
+            # Use batch generation for Stable Diffusion
+            try:
+                generated_images = ai_service.generate_images(
+                    prompt_data.get('prompt', ''),
+                    num_images=num_images,
+                    resolution=prompt_data.get('size', '1024x1024'),
+                    steps=prompt_data.get('quality', '25'),
+                    size=prompt_data.get('size', '1024x1024'),
+                    quality=prompt_data.get('quality', '25')
+                )
+                
+                for i, img_data in enumerate(generated_images):
+                    task_id = str(uuid.uuid4())
+                    
+                    # Create preview URL
+                    if img_data['path'].startswith("uploads/"):
+                        preview_url = f"/{img_data['path']}"
+                    else:
+                        filename = os.path.basename(img_data['path'])
+                        preview_url = f"/uploads/{filename}"
+                    
+                    # Store preview info
+                    preview_data = {
+                        "project_id": str(project_id),
+                        "prompt": prompt_data.get('prompt', ''),
+                        "service": prompt_data.get('service', 'stable_diffusion'),
+                        "size": prompt_data.get('size', '1024x1024'),
+                        "quality": prompt_data.get('quality', '25'),
+                        "preview_url": preview_url,
+                        "file_path": img_data['path'],
+                        "seed": img_data.get('seed'),
+                        "resolution": img_data.get('resolution'),
+                        "steps": img_data.get('steps'),
+                        "batch_index": i + 1,
+                        "created_at": datetime.utcnow().isoformat()
+                    }
+                    
+                    preview_cache.set(task_id, preview_data)
+                    
+                    preview_responses.append(ImagePreviewResponse(
+                        task_id=task_id,
+                        preview_url=preview_url,
+                        prompt=prompt_data.get('prompt', ''),
+                        service=prompt_data.get('service', 'stable_diffusion')
+                    ))
+                
+            except Exception as e:
+                print(f"Batch generation failed: {e}")
+                raise HTTPException(status_code=503, detail=f"Batch generation failed: {str(e)}")
+                
+        else:
+            # For other services, generate individually
+            for i in range(num_images):
+                try:
+                    task_id = str(uuid.uuid4())
+                    preview_url = ai_service.generate_image(
+                        prompt_data.get('prompt', ''),
+                        size=prompt_data.get('size', '1024x1024'),
+                        quality=prompt_data.get('quality', 'standard')
+                    )
+                    
+                    # Store preview info
+                    preview_data = {
+                        "project_id": str(project_id),
+                        "prompt": prompt_data.get('prompt', ''),
+                        "service": prompt_data.get('service', 'dalle'),
+                        "size": prompt_data.get('size', '1024x1024'),
+                        "quality": prompt_data.get('quality', 'standard'),
+                        "preview_url": preview_url,
+                        "file_path": None,
+                        "batch_index": i + 1,
+                        "created_at": datetime.utcnow().isoformat()
+                    }
+                    
+                    preview_cache.set(task_id, preview_data)
+                    
+                    preview_responses.append(ImagePreviewResponse(
+                        task_id=task_id,
+                        preview_url=preview_url,
+                        prompt=prompt_data.get('prompt', ''),
+                        service=prompt_data.get('service', 'dalle')
+                    ))
+                    
+                except Exception as e:
+                    print(f"Failed to generate image {i+1}: {e}")
+                    continue
+        
+        if not preview_responses:
+            raise HTTPException(status_code=503, detail="Failed to generate any images")
+        
+        print(f"Successfully generated {len(preview_responses)} preview images")
+        return preview_responses
+        
+    except Exception as e:
+        print(f"Error in batch preview generation: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Batch image generation service error: {str(e)}"
+        )
 @router.post("/{project_id}/approve-image", response_model=GeneratedImageResponse)
 async def approve_image(
     project_id: UUID,

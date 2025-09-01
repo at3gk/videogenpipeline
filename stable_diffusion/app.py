@@ -29,6 +29,14 @@ def get_device():
         logger.info("CUDA not available, using CPU")
     return device
 
+def make_divisible_by_8(value, default=512):
+    """Ensure dimension is divisible by 8"""
+    try:
+        value = int(value)
+        return max(8, (value // 8) * 8)
+    except (ValueError, TypeError):
+        return default
+        
 def initialize_pipeline():
     """Initialize the Stable Diffusion pipeline with GPU support"""
     global pipeline, device
@@ -183,6 +191,124 @@ def generate_image():
         
     except Exception as e:
         logger.error(f"Error generating image: {e}")
+        # Clear GPU cache on error
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/generate-batch', methods=['POST'])
+def generate_batch():
+    """Generate multiple images from prompt"""
+    try:
+        if pipeline is None:
+            return jsonify({"error": "Model not loaded yet"}), 503
+        
+        data = request.get_json()
+        prompt = data.get('prompt', '')
+        num_images = data.get('num_images', 1)
+        negative_prompt = data.get('negative_prompt', 'blurry, low quality, distorted, ugly, bad anatomy')
+        steps = data.get('steps', 25)
+        
+        # Fix dimensions to be divisible by 8
+        raw_width = data.get('width', 1024)
+        raw_height = data.get('height', 1024)
+        width = make_divisible_by_8(raw_width, 1024)
+        height = make_divisible_by_8(raw_height, 1024)
+        
+        guidance_scale = data.get('guidance_scale', 7.5)
+        seed = data.get('seed', None)
+        
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
+        
+        # Validate num_images
+        num_images = min(max(1, int(num_images)), 10)  # Limit to 1-10 images
+        
+        logger.info(f"Generating {num_images} {width}x{height} images for prompt: '{prompt[:50]}...' on {device}")
+        
+        generated_images = []
+        
+        for i in range(num_images):
+            try:
+                # Set up generator with different seed for each image
+                generator = None
+                if seed is not None:
+                    current_seed = seed + i
+                    generator = torch.Generator(device=device).manual_seed(current_seed)
+                else:
+                    import random
+                    current_seed = random.randint(1, 1000000)
+                    generator = torch.Generator(device=device).manual_seed(current_seed)
+                
+                logger.info(f"Generating image {i+1}/{num_images} with seed {current_seed}")
+                
+                # Generate image with appropriate precision
+                with torch.no_grad():
+                    if device == "cuda":
+                        with torch.autocast("cuda"):
+                            result = pipeline(
+                                prompt=prompt,
+                                negative_prompt=negative_prompt,
+                                num_inference_steps=steps,
+                                width=width,
+                                height=height,
+                                guidance_scale=guidance_scale,
+                                generator=generator
+                            )
+                    else:
+                        result = pipeline(
+                            prompt=prompt,
+                            negative_prompt=negative_prompt,
+                            num_inference_steps=steps,
+                            width=width,
+                            height=height,
+                            guidance_scale=guidance_scale,
+                            generator=generator
+                        )
+                
+                image = result.images[0]
+                
+                # Save image to outputs directory
+                os.makedirs("/app/outputs", exist_ok=True)
+                filename = f"sd_batch_{i+1}_{uuid.uuid4().hex[:8]}.png"
+                filepath = f"/app/outputs/{filename}"
+                image.save(filepath, quality=95, optimize=True)
+                
+                generated_images.append({
+                    "filename": filename,
+                    "filepath": filepath,
+                    "seed": current_seed,
+                    "image_index": i + 1
+                })
+                
+                logger.info(f"Image {i+1} saved to {filepath}")
+                
+            except Exception as e:
+                logger.error(f"Error generating image {i+1}: {e}")
+                # Continue with next image
+                continue
+        
+        # Clear GPU cache
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        
+        if not generated_images:
+            return jsonify({"error": "Failed to generate any images"}), 500
+        
+        # Return success response with all generated images
+        return jsonify({
+            "success": True,
+            "images": generated_images,
+            "prompt": prompt,
+            "resolution": f"{width}x{height}",
+            "steps": steps,
+            "device": device,
+            "guidance_scale": guidance_scale,
+            "total_generated": len(generated_images)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in batch generation: {e}")
         # Clear GPU cache on error
         if device == "cuda":
             torch.cuda.empty_cache()
