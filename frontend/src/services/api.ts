@@ -116,7 +116,7 @@ export const projectsApi = {
         num_images: numImages
       }),
     }),
-    
+
   approveImage: (projectId: string, previewId: string) =>
     apiRequest<any>(`/api/projects/${projectId}/approve-image`, {
       method: 'POST',
@@ -139,6 +139,118 @@ export const projectsApi = {
   
   getVideos: (projectId: string) =>
     apiRequest<any[]>(`/api/projects/${projectId}/videos`),
+
+  // Enhanced video composition that automatically detects multi-audio
+  composeVideoEnhanced: (projectId: string, settings: {
+    resolution: string;
+    fps: number;
+    transition_duration: number;
+    transition_type: string;
+    add_ken_burns: boolean;
+    image_distribution?: string; // New setting for multi-audio
+  }) =>
+    apiRequest<{
+      message: string;
+      task_id: string;
+      job_id: string;
+      status: string;
+      settings: any;
+    }>(`/api/projects/${projectId}/compose-video-enhanced`, {
+      method: 'POST',
+      body: JSON.stringify(settings),
+    }),
+
+  // Get audio composition info
+  getAudioCompositionInfo: (projectId: string) =>
+    apiRequest<{
+      file_count: number;
+      total_duration: number;
+      files: Array<{
+        index: number;
+        filename: string;
+        duration: number;
+        start_time: number;
+        end_time: number;
+        size: number;
+      }>;
+      preview: {
+        estimated_video_length: string;
+        combination_method: string;
+        transition_type: string;
+      };
+    }>(`/api/projects/${projectId}/audio-composition-info`),
+
+  // Get video composition status
+  getVideoStatus: (projectId: string, taskId: string) =>
+    apiRequest<{
+      status: 'pending' | 'progress' | 'success' | 'failed';
+      progress: number;
+      message?: string;
+      result?: any;
+      error?: string;
+    }>(`/api/projects/${projectId}/video-status/${taskId}`),
+
+  // Cancel video composition
+  cancelVideoComposition: (projectId: string, taskId: string) =>
+    apiRequest<{
+      message: string;
+      task_id: string;
+      status: string;
+    }>(`/api/projects/${projectId}/cancel-video/${taskId}`, {
+      method: 'POST',
+    }),
+
+  // Multi-audio specific video composition
+  composeVideoMultiAudio: (projectId: string, settings: {
+    resolution: string;
+    fps: number;
+    transition_duration: number;
+    transition_type: string;
+    add_ken_burns: boolean;
+    image_distribution: string;
+  }) =>
+    apiRequest<{
+      message: string;
+      task_id: string;
+      job_id: string;
+      status: string;
+      audio_info: {
+        file_count: number;
+        total_duration: number;
+        individual_files: string[];
+      };
+    }>(`/api/projects/${projectId}/compose-video-multi-audio`, {
+      method: 'POST',
+      body: JSON.stringify(settings),
+    }),
+
+  // Get video preview/details
+  getVideoPreview: (projectId: string, videoId: string) =>
+    apiRequest<{
+      id: string;
+      project_id: string;
+      video_url: string;
+      file_path: string;
+      duration_seconds: number;
+      resolution: string;
+      file_size_bytes: number;
+      status: string;
+      youtube_video_id?: string;
+      created_at: string;
+      download_url: string;
+    }>(`/api/projects/${projectId}/video-preview/${videoId}`),
+
+  // FFmpeg-specific video composition
+  composeVideoFFmpeg: (projectId: string, settings: any) =>
+    apiRequest<{
+      message: string;
+      task_id: string;
+      job_id: string;
+      status: string;
+    }>(`/api/projects/${projectId}/compose-video-ffmpeg`, {
+      method: 'POST',
+      body: JSON.stringify(settings),
+    }),
   
   getJobs: (projectId: string) =>
     apiRequest<any[]>(`/api/projects/${projectId}/jobs`),

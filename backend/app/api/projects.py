@@ -12,9 +12,9 @@ from ..models import Project, AudioFile, GeneratedImage, VideoOutput, Processing
 from ..schemas import (
     ProjectCreate, ProjectUpdate, ProjectResponse,
     AudioFileResponse, GeneratedImageResponse, VideoOutputResponse,
-    ImagePrompt, VideoCompositionSettings, TaskStartedResponse, ImageApprovalRequest, ImagePreviewResponse
+    ImagePrompt, VideoCompositionSettings, MultiAudioVideoCompositionSettings, EnhancedVideoCompositionSettings, TaskStartedResponse, ImageApprovalRequest, ImagePreviewResponse
 )
-from ..tasks import generate_ai_image, compose_video, publish_to_youtube
+from ..tasks import generate_ai_image, compose_video_multi_audio, publish_to_youtube
 from ..config import settings
 from ..services.preview_cache import preview_cache
 
@@ -617,6 +617,83 @@ async def approve_image(
         print(f"Error approving image: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to approve image: {str(e)}")
 
+@router.post("/{project_id}/reject-image")
+async def reject_image(
+    project_id: UUID,
+    request: Dict,  # Contains preview_id
+    db: Session = Depends(get_db)
+):
+    """Reject a preview image and clean up files"""
+    preview_id = request.get("preview_id")
+    
+    if not preview_id:
+        raise HTTPException(status_code=400, detail="preview_id is required")
+    
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    try:
+        # Get preview data using PreviewCache method
+        preview_data = preview_cache.get(preview_id)
+        if not preview_data:
+            # If preview doesn't exist in cache, it's already been handled or expired
+            return {"message": "Preview image not found or already processed"}
+        
+        print(f"Rejecting preview image: {preview_id}")
+        print(f"Preview data: {preview_data}")
+        
+        # If it's a local file (from stable diffusion), delete the physical file
+        file_path = preview_data.get("file_path")
+        if file_path:
+            try:
+                # Handle different file path formats
+                if file_path.startswith("uploads/"):
+                    full_path = file_path
+                elif "/" not in file_path:
+                    full_path = f"uploads/{file_path}"
+                else:
+                    full_path = file_path
+                
+                print(f"Attempting to delete file: {full_path}")
+                
+                if os.path.exists(full_path):
+                    os.remove(full_path)
+                    print(f"Successfully deleted file: {full_path}")
+                else:
+                    print(f"File not found: {full_path}")
+                    # List available files for debugging
+                    if os.path.exists("uploads"):
+                        available_files = os.listdir("uploads")[:10]  # Limit output
+                        print(f"Available files in uploads (first 10): {available_files}")
+                        
+            except Exception as e:
+                print(f"Error deleting file {file_path}: {e}")
+                # Continue with cache cleanup even if file deletion fails
+        
+        # Remove from preview cache
+        preview_cache.delete(preview_id)
+        print(f"Removed preview {preview_id} from cache")
+        
+        return {"message": "Preview image rejected and cleaned up successfully"}
+        
+    except Exception as e:
+        print(f"Error rejecting preview image: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        # Still try to clean up the cache entry
+        try:
+            preview_cache.delete(preview_id)
+        except:
+            pass
+            
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to reject preview image: {str(e)}"
+        )
+
 @router.delete("/{project_id}/images/{image_id}")
 async def remove_image(
     project_id: UUID,
@@ -651,5 +728,397 @@ async def get_project_images(project_id: UUID, db: Session = Depends(get_db)):
     ).all()
     return images
 
+@router.post("/{project_id}/compose-video-ffmpeg", response_model=dict)
+async def compose_video_ffmpeg_endpoint(
+    project_id: UUID,
+    composition_settings: VideoCompositionSettings,
+    db: Session = Depends(get_db)
+):
+    """Create video from audio and images using FFmpeg"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Check if project has audio file
+    audio_file = db.query(AudioFile).filter(AudioFile.project_id == project_id).first()
+    if not audio_file:
+        raise HTTPException(status_code=400, detail="Project must have an audio file")
+    
+    # Check if project has approved images
+    images = db.query(GeneratedImage).filter(
+        GeneratedImage.project_id == project_id,
+        GeneratedImage.status == "approved"
+    ).count()
+    
+    if images == 0:
+        raise HTTPException(status_code=400, detail="Project must have at least one approved image")
+    
+    try:
+        # Start background task
+        from ..tasks import compose_video_ffmpeg
+        task = compose_video_ffmpeg.delay(
+            str(project_id),
+            composition_settings.dict()
+        )
+        
+        # Create processing job record
+        processing_job = ProcessingJob(
+            project_id=project_id,
+            job_type="video_composition_ffmpeg",
+            status="pending",
+            progress=0
+        )
+        
+        db.add(processing_job)
+        db.commit()
+        
+        return {
+            "message": "Video composition started using FFmpeg",
+            "task_id": task.id,
+            "job_id": str(processing_job.id),
+            "status": "pending"
+        }
+        
+    except Exception as e:
+        # Create failed job record
+        processing_job = ProcessingJob(
+            project_id=project_id,
+            job_type="video_composition_ffmpeg",
+            status="failed",
+            error_message=f"Failed to start task: {str(e)}"
+        )
+        
+        db.add(processing_job)
+        db.commit()
+        
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Video composition service unavailable: {str(e)}"
+        )
+
+@router.post("/{project_id}/compose-video-multi-audio", response_model=dict)
+async def compose_video_multi_audio_endpoint(
+    project_id: UUID,
+    composition_settings: dict,  # Use dict to accept flexible settings
+    db: Session = Depends(get_db)
+):
+    """Create video from multiple audio files and images using FFmpeg"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Check if project has audio files
+    audio_files = db.query(AudioFile).filter(AudioFile.project_id == project_id).all()
+    if not audio_files:
+        raise HTTPException(status_code=400, detail="Project must have at least one audio file")
+    
+    # Check if project has approved images
+    images = db.query(GeneratedImage).filter(
+        GeneratedImage.project_id == project_id,
+        GeneratedImage.status == "approved"
+    ).count()
+    
+    if images == 0:
+        raise HTTPException(status_code=400, detail="Project must have at least one approved image")
+    
+    try:
+        # Start multi-audio background task
+        from ..tasks import compose_video_multi_audio
+        task = compose_video_multi_audio.delay(
+            str(project_id),
+            composition_settings
+        )
+        
+        # Create processing job record
+        processing_job = ProcessingJob(
+            project_id=project_id,
+            job_type="video_composition_multi_audio",
+            status="pending",
+            progress=0
+        )
+        
+        db.add(processing_job)
+        db.commit()
+        
+        return {
+            "message": f"Multi-audio video composition started with {len(audio_files)} audio files",
+            "task_id": task.id,
+            "job_id": str(processing_job.id),
+            "status": "pending",
+            "audio_files_count": len(audio_files),
+            "settings": composition_settings
+        }
+        
+    except Exception as e:
+        # Create failed job record
+        processing_job = ProcessingJob(
+            project_id=project_id,
+            job_type="video_composition_multi_audio",
+            status="failed",
+            error_message=f"Failed to start task: {str(e)}"
+        )
+        
+        db.add(processing_job)
+        db.commit()
+        
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Multi-audio video composition service unavailable: {str(e)}"
+        )
+
+@router.get("/{project_id}/audio-composition-info")
+async def get_audio_composition_info(
+    project_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Get information about how multiple audio files will be combined"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    try:
+        from ..tasks import get_audio_composition_info
+        result = get_audio_composition_info.delay(str(project_id)).get()
+        
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting audio composition info: {str(e)}"
+        )
+
+# Update the existing enhanced endpoint to automatically detect multi-audio
+@router.post("/{project_id}/compose-video-enhanced", response_model=dict)
+async def compose_video_enhanced_endpoint(
+    project_id: UUID,
+    composition_settings: dict,  # Accept flexible settings
+    db: Session = Depends(get_db)
+):
+    """Enhanced video composition that automatically detects single or multi-audio"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Count audio files to determine which composition method to use
+    audio_files = db.query(AudioFile).filter(AudioFile.project_id == project_id).all()
+    if not audio_files:
+        raise HTTPException(status_code=400, detail="Project must have at least one audio file")
+    
+    # Check if project has approved images
+    images = db.query(GeneratedImage).filter(
+        GeneratedImage.project_id == project_id,
+        GeneratedImage.status == "approved"
+    ).count()
+    
+    if images == 0:
+        raise HTTPException(status_code=400, detail="Project must have at least one approved image")
+    
+    try:
+        if len(audio_files) > 1:
+            # Multi-audio composition
+            from ..tasks import compose_video_multi_audio
+            task = compose_video_multi_audio.delay(
+                str(project_id),
+                composition_settings
+            )
+            
+            processing_job = ProcessingJob(
+                project_id=project_id,
+                job_type="video_composition_multi_audio",
+                status="pending",
+                progress=0
+            )
+            
+            message = f"Multi-audio video composition started with {len(audio_files)} audio files"
+        else:
+            # Single audio composition
+            from ..tasks import compose_video_ffmpeg
+            task = compose_video_ffmpeg.delay(
+                str(project_id),
+                composition_settings
+            )
+            
+            processing_job = ProcessingJob(
+                project_id=project_id,
+                job_type="video_composition_enhanced",
+                status="pending",
+                progress=0
+            )
+            
+            message = "Enhanced video composition started"
+        
+        db.add(processing_job)
+        db.commit()
+        
+        return {
+            "message": message,
+            "task_id": task.id,
+            "job_id": str(processing_job.id),
+            "status": "pending",
+            "is_multi_audio": len(audio_files) > 1,
+            "audio_files_count": len(audio_files),
+            "settings": composition_settings
+        }
+        
+    except Exception as e:
+        processing_job = ProcessingJob(
+            project_id=project_id,
+            job_type="video_composition_enhanced",
+            status="failed",
+            error_message=f"Failed to start task: {str(e)}"
+        )
+        
+        db.add(processing_job)
+        db.commit()
+        
+        raise HTTPException(
+            status_code=503,
+            detail=f"Enhanced video composition service unavailable: {str(e)}"
+        )
+
+@router.get("/{project_id}/video-status/{task_id}")
+async def get_video_composition_status(
+    project_id: UUID,
+    task_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get the status of a video composition task"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    try:
+        from celery.result import AsyncResult
+        from ..celery_app import celery_app
+        
+        result = AsyncResult(task_id, app=celery_app)
+        
+        if result.state == 'PENDING':
+            return {
+                'status': 'pending', 
+                'progress': 0,
+                'message': 'Task is waiting to start'
+            }
+        elif result.state == 'PROGRESS':
+            return {
+                'status': 'progress',
+                'progress': result.info.get('progress', 0),
+                'message': result.info.get('status', 'Processing...')
+            }
+        elif result.state == 'SUCCESS':
+            return {
+                'status': 'success',
+                'progress': 100,
+                'message': 'Video composition completed',
+                'result': result.result
+            }
+        elif result.state == 'FAILURE':
+            return {
+                'status': 'failed',
+                'progress': 0,
+                'message': 'Video composition failed',
+                'error': str(result.info)
+            }
+        else:
+            return {
+                'status': result.state.lower(),
+                'progress': 0,
+                'message': f'Task state: {result.state}'
+            }
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error checking task status: {str(e)}"
+        )
+
+@router.post("/{project_id}/cancel-video/{task_id}")
+async def cancel_video_composition(
+    project_id: UUID,
+    task_id: str,
+    db: Session = Depends(get_db)
+):
+    """Cancel a running video composition task"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    try:
+        from ..celery_app import celery_app
+        
+        # Revoke the task
+        celery_app.control.revoke(task_id, terminate=True)
+        
+        # Update processing job status
+        processing_job = db.query(ProcessingJob).filter(
+            ProcessingJob.project_id == project_id,
+            ProcessingJob.job_type.in_(["video_composition", "video_composition_ffmpeg"])
+        ).order_by(ProcessingJob.created_at.desc()).first()
+        
+        if processing_job:
+            processing_job.status = "cancelled"
+            processing_job.error_message = "Cancelled by user"
+            db.commit()
+        
+        return {
+            "message": "Video composition task cancelled",
+            "task_id": task_id,
+            "status": "cancelled"
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error cancelling task: {str(e)}"
+        )
+
+@router.get("/{project_id}/video-preview/{video_id}")
+async def get_video_preview(
+    project_id: UUID,
+    video_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Get video preview information"""
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Get video output
+    video = db.query(VideoOutput).filter(
+        VideoOutput.id == video_id,
+        VideoOutput.project_id == project_id
+    ).first()
+    
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    # Generate video URL
+    base_url = "http://localhost:8000"  # This should come from config
+    video_url = f"{base_url}/uploads/{video.file_path}"
+    
+    return {
+        "id": str(video.id),
+        "project_id": str(video.project_id),
+        "video_url": video_url,
+        "file_path": video.file_path,
+        "duration_seconds": float(video.duration_seconds) if video.duration_seconds else 0,
+        "resolution": video.resolution,
+        "file_size_bytes": video.file_size_bytes,
+        "status": video.status,
+        "youtube_video_id": video.youtube_video_id,
+        "created_at": video.created_at.isoformat(),
+        "download_url": video_url
+    }
 # # Simple in-memory cache for preview images (in production, use Redis)
 # preview_cache: Dict[str, Dict] = {}

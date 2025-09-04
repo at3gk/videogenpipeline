@@ -6,7 +6,7 @@ import toast from 'react-hot-toast';
 
 interface AudioUploadProps {
   projectId: string;
-  onUploadComplete: (file: AudioFile | null) => void;
+  onUploadComplete: (files: AudioFile[]) => void; // Changed to accept multiple files
   maxFileSize?: number;
   acceptedFormats?: string[];
 }
@@ -19,13 +19,14 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
 }) => {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<AudioFile | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<AudioFile[]>([]);
   const [existingFiles, setExistingFiles] = useState<AudioFile[]>([]);
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [playingFileId, setPlayingFileId] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState<{ [key: string]: number }>({});
   const [duration, setDuration] = useState<{ [key: string]: number }>({});
+  const [playbackOrder, setPlaybackOrder] = useState<string[]>([]);
   const audioRefs = useRef<{ [key: string]: HTMLAudioElement }>({});
 
   useEffect(() => {
@@ -38,7 +39,6 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
       const files = await projectsApi.getAudioFiles(projectId);
       setExistingFiles(files);
       
-      // Don't auto-select anymore - let user choose
       if (files.length === 0) {
         setShowUploadForm(true);
       }
@@ -51,32 +51,29 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
   };
 
   const handleFileUpload = async (acceptedFiles: File[]) => {
-    const file = acceptedFiles[0];
     setIsUploading(true);
     setUploadProgress(0);
     
     try {
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => {
-          if (prev >= 90) {
-            clearInterval(progressInterval);
-            return 90;
-          }
-          return prev + 10;
-        });
-      }, 200);
+      const uploadedFiles: AudioFile[] = [];
       
-      const audioFile = await projectsApi.uploadAudio(projectId, file);
+      for (let i = 0; i < acceptedFiles.length; i++) {
+        const file = acceptedFiles[i];
+        
+        // Update progress for each file
+        setUploadProgress(((i + 0.5) / acceptedFiles.length) * 100);
+        
+        const audioFile = await projectsApi.uploadAudio(projectId, file);
+        uploadedFiles.push(audioFile);
+      }
       
-      clearInterval(progressInterval);
       setUploadProgress(100);
       
-      setExistingFiles(prev => [...prev, audioFile]);
-      setSelectedFile(audioFile);
+      setExistingFiles(prev => [...prev, ...uploadedFiles]);
       setShowUploadForm(false);
       
-      onUploadComplete(audioFile);
-      toast.success('Audio file uploaded successfully!');
+      // Don't auto-proceed after upload - let user select which files to use
+      toast.success(`${uploadedFiles.length} audio file${uploadedFiles.length !== 1 ? 's' : ''} uploaded! Select the files you want to use above.`);
     } catch (error) {
       console.error('Upload failed:', error);
       toast.error('Upload failed. Please try again.');
@@ -86,10 +83,24 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
     }
   };
 
-  const handleSelectFile = (audioFile: AudioFile) => {
-    setSelectedFile(audioFile);
-    onUploadComplete(audioFile);
-    toast.success(`Selected: ${audioFile.filename}`);
+  const handleSelectFile = (audioFile: AudioFile, isSelected: boolean) => {
+    let newSelected: AudioFile[];
+    
+    if (isSelected) {
+      newSelected = [...selectedFiles, audioFile];
+    } else {
+      newSelected = selectedFiles.filter(f => f.id !== audioFile.id);
+    }
+    
+    setSelectedFiles(newSelected);
+    onUploadComplete(newSelected);
+    
+    if (newSelected.length > 0) {
+      const totalDuration = newSelected.reduce((sum, file) => 
+        sum + (file.duration_seconds || 0), 0
+      );
+      toast.success(`${newSelected.length} file${newSelected.length !== 1 ? 's' : ''} selected (${formatTime(totalDuration)} total)`);
+    }
   };
 
   const handleRemoveFile = async (fileId: string) => {
@@ -101,10 +112,10 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
       await projectsApi.removeAudioFile(projectId, fileId);
       setExistingFiles(prev => prev.filter(f => f.id !== fileId));
       
-      if (selectedFile?.id === fileId) {
-        setSelectedFile(null);
-        onUploadComplete(null);
-      }
+      // Remove from selected files if it was selected
+      const newSelected = selectedFiles.filter(f => f.id !== fileId);
+      setSelectedFiles(newSelected);
+      onUploadComplete(newSelected);
       
       toast.success('Audio file removed');
     } catch (error) {
@@ -113,51 +124,46 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
     }
   };
 
-  const getAudioUrl = (audioFile: AudioFile) => {
-    console.log('DEBUG: AudioFile object:', audioFile);
-    console.log('DEBUG: file_path:', audioFile.file_path);
-    console.log('DEBUG: filename:', audioFile.filename);
+  // Drag and drop reordering for selected files
+  const handleReorderSelectedFiles = (dragIndex: number, dropIndex: number) => {
+    const reorderedFiles = [...selectedFiles];
+    const [removed] = reorderedFiles.splice(dragIndex, 1);
+    reorderedFiles.splice(dropIndex, 0, removed);
     
+    setSelectedFiles(reorderedFiles);
+    onUploadComplete(reorderedFiles);
+  };
+
+  const getAudioUrl = (audioFile: AudioFile) => {
     const baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
     
     let actualFilename = '';
     
     if (audioFile.file_path) {
-      // Handle different file_path formats:
       if (audioFile.file_path.startsWith('uploads/')) {
-        // Old format: "uploads/audio_7d31044e.mp3" -> extract "audio_7d31044e.mp3"
         actualFilename = audioFile.file_path.replace('uploads/', '');
       } else if (audioFile.file_path.includes('/')) {
-        // Other full path format -> extract just the filename
         actualFilename = audioFile.file_path.split('/').pop() || '';
       } else {
-        // New format: just the filename "Raise_Your_Glasses_High_0ecd5bc8.mp3"
         actualFilename = audioFile.file_path;
       }
     } else {
-      // Fallback to original filename (shouldn't happen with proper uploads)
       actualFilename = audioFile.filename;
     }
     
-    const audioUrl = `${baseUrl}/uploads/${actualFilename}`;
-    console.log('DEBUG: Actual filename:', actualFilename);
-    console.log('DEBUG: Constructed audio URL:', audioUrl);
-    return audioUrl;
+    return `${baseUrl}/uploads/${actualFilename}`;
   };
 
   const handlePlayAudio = (audioFile: AudioFile) => {
     const audioUrl = getAudioUrl(audioFile);
     
-    // Stop any currently playing audio
     if (playingFileId && playingFileId !== audioFile.id) {
       handleStopAudio(playingFileId);
     }
 
     if (playingFileId === audioFile.id) {
-      // Pause current
       handlePauseAudio(audioFile.id);
     } else {
-      // Play new audio
       if (!audioRefs.current[audioFile.id]) {
         audioRefs.current[audioFile.id] = new Audio(audioUrl);
         
@@ -204,13 +210,6 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
     }
   };
 
-  const handleSeekAudio = (fileId: string, seekTime: number) => {
-    if (audioRefs.current[fileId]) {
-      audioRefs.current[fileId].currentTime = seekTime;
-      setCurrentTime(prev => ({ ...prev, [fileId]: seekTime }));
-    }
-  };
-
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: {
       'audio/mpeg': ['.mp3'],
@@ -219,7 +218,7 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
       'audio/flac': ['.flac']
     },
     maxSize: maxFileSize,
-    multiple: false,
+    multiple: true, // Enable multiple file selection
     onDrop: handleFileUpload
   });
 
@@ -238,7 +237,6 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Clean up audio references when component unmounts
   useEffect(() => {
     return () => {
       Object.values(audioRefs.current).forEach(audio => {
@@ -257,26 +255,67 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
     );
   }
 
+  const totalSelectedDuration = selectedFiles.reduce((sum, file) => sum + (file.duration_seconds || 0), 0);
+
   return (
-    <div className="w-full max-w-4xl mx-auto space-y-6">
+    <div className="w-full max-w-6xl mx-auto space-y-6">
+      {/* Selected Files Summary */}
+      {selectedFiles.length > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-medium text-blue-900">Selected Audio Track{selectedFiles.length !== 1 ? 's' : ''}</h3>
+            <div className="text-blue-700 text-sm">
+              {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} • {formatTime(totalSelectedDuration)} total
+            </div>
+          </div>
+          
+          {/* Selected Files List with Reordering */}
+          <div className="space-y-2">
+            {selectedFiles.map((file, index) => (
+              <div key={file.id} className="flex items-center space-x-3 bg-white rounded p-2 border">
+                <span className="text-blue-600 font-medium text-sm">#{index + 1}</span>
+                <span className="flex-1 text-sm font-medium text-gray-900 truncate">
+                  {file.filename}
+                </span>
+                <span className="text-sm text-gray-500">
+                  {formatTime(file.duration_seconds || 0)}
+                </span>
+                <button
+                  onClick={() => handleSelectFile(file, false)}
+                  className="text-red-500 hover:text-red-700 text-sm"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+          
+          {selectedFiles.length > 1 && (
+            <p className="text-xs text-blue-600 mt-2">
+              💡 Files will be played in order to create a longer video
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Existing Files Section */}
       {existingFiles.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-medium text-gray-900">
-              Choose Audio Track ({existingFiles.length} available)
+              Choose Audio Files ({existingFiles.length} available)
             </h3>
             <button
               onClick={() => setShowUploadForm(!showUploadForm)}
               className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
             >
-              {showUploadForm ? 'Cancel Upload' : '+ Upload New'}
+              {showUploadForm ? 'Cancel Upload' : '+ Upload More'}
             </button>
           </div>
 
-          <div className="space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {existingFiles.map((audioFile) => {
-              const isSelected = selectedFile?.id === audioFile.id;
+              const isSelected = selectedFiles.some(f => f.id === audioFile.id);
               const isPlaying = playingFileId === audioFile.id;
               const currentTimeForFile = currentTime[audioFile.id] || 0;
               const durationForFile = duration[audioFile.id] || audioFile.duration_seconds || 0;
@@ -294,25 +333,26 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center space-x-3">
                       <button
-                        onClick={() => handleSelectFile(audioFile)}
-                        className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${
+                        onClick={() => handleSelectFile(audioFile, !isSelected)}
+                        className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
                           isSelected 
                             ? 'border-blue-500 bg-blue-500' 
                             : 'border-gray-300 hover:border-blue-400'
                         }`}
                       >
                         {isSelected && (
-                          <div className="w-2 h-2 bg-white rounded-full"></div>
+                          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
                         )}
                       </button>
-                      <div>
-                        <p className="font-medium text-gray-900 truncate max-w-xs">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-gray-900 truncate">
                           {audioFile.filename}
                         </p>
                         <p className="text-sm text-gray-500">
                           {audioFile.file_size_bytes && formatFileSize(audioFile.file_size_bytes)}
                           {durationForFile > 0 && ` • ${formatTime(durationForFile)}`}
-                          {audioFile.uploaded_at && ` • ${new Date(audioFile.uploaded_at).toLocaleDateString()}`}
                         </p>
                       </div>
                     </div>
@@ -330,19 +370,16 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
                   {/* Audio Player Controls */}
                   <div className="space-y-3">
                     <div className="flex items-center space-x-3">
-                      {/* Play/Pause Button */}
                       <button
                         onClick={() => handlePlayAudio(audioFile)}
-                        className="flex-shrink-0 w-10 h-10 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center transition-colors"
+                        className="flex-shrink-0 w-8 h-8 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center transition-colors"
                       >
                         {isPlaying ? (
-                          <svg className="w-5 h-5 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <svg className="w-4 h-4 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6" />
                           </svg>
                         ) : (
-                          <svg className="w-5 h-5 text-gray-700 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1.586a1 1 0 01.707.293l2.414 2.414a1 1 0 00.707.293H15" />
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 18l13.5-13.5M18 5L4.5 18.5" />
+                          <svg className="w-4 h-4 text-gray-700 ml-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none" />
                           </svg>
                         )}
@@ -350,25 +387,27 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
 
                       {/* Progress Bar */}
                       <div className="flex-1">
-                        <div className="flex items-center space-x-2 text-sm text-gray-500 mb-1">
+                        <div className="flex items-center space-x-2 text-xs text-gray-500 mb-1">
                           <span>{formatTime(currentTimeForFile)}</span>
                           <span>/</span>
                           <span>{formatTime(durationForFile)}</span>
                         </div>
                         <div 
-                          className="w-full bg-gray-200 rounded-full h-2 cursor-pointer"
+                          className="w-full bg-gray-200 rounded-full h-1 cursor-pointer"
                           onClick={(e) => {
                             if (durationForFile > 0) {
                               const rect = e.currentTarget.getBoundingClientRect();
                               const clickX = e.clientX - rect.left;
                               const clickRatio = clickX / rect.width;
                               const seekTime = clickRatio * durationForFile;
-                              handleSeekAudio(audioFile.id, seekTime);
+                              if (audioRefs.current[audioFile.id]) {
+                                audioRefs.current[audioFile.id].currentTime = seekTime;
+                              }
                             }
                           }}
                         >
                           <div 
-                            className="bg-blue-600 h-2 rounded-full transition-all"
+                            className="bg-blue-600 h-1 rounded-full transition-all"
                             style={{ 
                               width: durationForFile > 0 ? `${(currentTimeForFile / durationForFile) * 100}%` : '0%' 
                             }}
@@ -376,13 +415,12 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
                         </div>
                       </div>
 
-                      {/* Stop Button */}
                       {isPlaying && (
                         <button
                           onClick={() => handleStopAudio(audioFile.id)}
-                          className="flex-shrink-0 w-8 h-8 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center transition-colors"
+                          className="flex-shrink-0 w-6 h-6 bg-gray-100 hover:bg-gray-200 rounded-full flex items-center justify-center transition-colors"
                         >
-                          <svg className="w-4 h-4 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <svg className="w-3 h-3 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <rect x="6" y="6" width="12" height="12" fill="currentColor" />
                           </svg>
                         </button>
@@ -395,7 +433,21 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
           </div>
 
           {/* Selection Status */}
-          {selectedFile ? (
+          {selectedFiles.length === 0 ? (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+              <div className="flex items-center space-x-3">
+                <svg className="h-6 w-6 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                </svg>
+                <div>
+                  <p className="font-medium text-yellow-800">No audio files selected</p>
+                  <p className="text-sm text-yellow-600">
+                    Select one or more audio files to create your video soundtrack
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
             <div className="bg-green-50 border border-green-200 rounded-lg p-4">
               <div className="flex items-center space-x-3">
                 <svg className="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -403,26 +455,10 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
                 </svg>
                 <div>
                   <p className="font-medium text-green-800">
-                    Selected: {selectedFile.filename}
+                    {selectedFiles.length} audio file{selectedFiles.length !== 1 ? 's' : ''} selected
                   </p>
                   <p className="text-sm text-green-600">
-                    Ready to proceed to image generation
-                  </p>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-              <div className="flex items-center space-x-3">
-                <svg className="h-6 w-6 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                </svg>
-                <div>
-                  <p className="font-medium text-yellow-800">
-                    No audio track selected
-                  </p>
-                  <p className="text-sm text-yellow-600">
-                    Please select an audio file above or upload a new one below to continue
+                    Total duration: {formatTime(totalSelectedDuration)} • Ready to proceed to image generation
                   </p>
                 </div>
               </div>
@@ -431,12 +467,12 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
         </div>
       )}
 
-      {/* Upload New File Section */}
+      {/* Upload New Files Section */}
       {(showUploadForm || existingFiles.length === 0) && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-medium text-gray-900">
-              {existingFiles.length > 0 ? 'Upload New Audio File' : 'Upload Audio File'}
+              {existingFiles.length > 0 ? 'Upload More Audio Files' : 'Upload Audio Files'}
             </h3>
             {existingFiles.length > 0 && (
               <button
@@ -467,7 +503,7 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
                     style={{ width: `${uploadProgress}%` }}
                   />
                 </div>
-                <p className="text-gray-600">Uploading... {uploadProgress}%</p>
+                <p className="text-gray-600">Uploading... {Math.round(uploadProgress)}%</p>
               </div>
             ) : (
               <div className="space-y-4">
@@ -476,10 +512,10 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
                 </svg>
                 <div>
                   <p className="text-xl font-medium text-gray-900">
-                    Drop your audio file here
+                    Drop audio files here or click to browse
                   </p>
                   <p className="text-gray-500">
-                    or click to browse ({acceptedFormats.join(', ')}) - max {formatFileSize(maxFileSize)}
+                    Multiple files supported ({acceptedFormats.join(', ')}) - max {formatFileSize(maxFileSize)} each
                   </p>
                 </div>
               </div>

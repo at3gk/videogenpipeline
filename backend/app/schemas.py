@@ -110,6 +110,47 @@ class VideoCompositionSettings(BaseModel):
     transition_duration: float = Field(default=1.0, ge=0.1, le=5.0)
     add_audio_visualization: bool = Field(default=True)
 
+class EnhancedVideoCompositionSettings(BaseModel):
+    resolution: str = Field(default="1920x1080", pattern="^(1280x720|1920x1080|2560x1440|3840x2160)$")
+    fps: int = Field(default=30, ge=15, le=60)
+    transition_duration: float = Field(default=1.0, ge=0.1, le=5.0)
+    transition_type: str = Field(default="fade", pattern="^(fade|dissolve|wipe|slide)$")
+    add_ken_burns: bool = Field(default=False, description="Add zoom/pan effects to images")
+    add_audio_visualization: bool = Field(default=False, description="Add audio waveform visualization")
+    image_display_mode: str = Field(default="equal", pattern="^(equal|custom)$")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "resolution": "1920x1080",
+                "fps": 30,
+                "transition_duration": 1.5,
+                "transition_type": "fade",
+                "add_ken_burns": True,
+                "add_audio_visualization": False,
+                "image_display_mode": "equal"
+            }
+        }
+class MultiAudioVideoCompositionSettings(BaseModel):
+    resolution: str = Field(default="1920x1080", pattern="^(1280x720|1920x1080|2560x1440|3840x2160)$")
+    fps: int = Field(default=30, ge=15, le=60)
+    transition_duration: float = Field(default=1.0, ge=0.1, le=5.0)
+    transition_type: str = Field(default="fade", pattern="^(fade|dissolve|wipe|slide)$")
+    add_ken_burns: bool = Field(default=False, description="Add zoom/pan effects to images")
+    image_distribution: str = Field(default="equal", pattern="^(equal|proportional|custom)$", description="How to distribute images across the audio timeline")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "resolution": "1920x1080",
+                "fps": 30,
+                "transition_duration": 1.5,
+                "transition_type": "fade",
+                "add_ken_burns": False,
+                "image_distribution": "equal"
+            }
+        }
+                
 class VideoOutputBase(BaseModel):
     file_path: str
     duration_seconds: Optional[float] = None
