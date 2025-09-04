@@ -81,6 +81,85 @@ async def delete_project(project_id: UUID, db: Session = Depends(get_db)):
     
     return {"message": "Project deleted successfully"}
 
+@router.post("/{project_id}/cleanup-orphaned-images")
+async def cleanup_orphaned_images(
+    project_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Remove database records for images that no longer exist on disk"""
+    print(f"🧹 Starting orphaned image cleanup for project {project_id}")
+    
+    # Validate project exists
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Get all images for this project
+    images = db.query(GeneratedImage).filter(GeneratedImage.project_id == project_id).all()
+    
+    orphaned_count = 0
+    valid_count = 0
+    orphaned_details = []
+    
+    for img in images:
+        is_orphaned = False
+        img_path = None
+        
+        if img.file_path:
+            # Check if file exists on disk
+            if img.file_path.startswith('uploads/'):
+                img_path = img.file_path
+            elif '/' in img.file_path:
+                img_path = img.file_path
+            else:
+                img_path = os.path.join("uploads", img.file_path)
+            
+            print(f"  Checking: {img_path}")
+            
+            if not os.path.exists(img_path):
+                is_orphaned = True
+                orphaned_details.append(f"Missing file: {img_path}")
+                print(f"    ❌ File not found")
+            else:
+                # File exists, verify it's a valid image
+                try:
+                    from PIL import Image as PILImage
+                    with PILImage.open(img_path) as pil_img:
+                        pass  # Just verify it can be opened
+                    valid_count += 1
+                    print(f"    ✅ Valid image file")
+                except Exception as e:
+                    is_orphaned = True
+                    orphaned_details.append(f"Corrupted file: {img_path} - {str(e)}")
+                    print(f"    ❌ Corrupted image: {e}")
+        elif img.image_url and img.image_url.startswith('http'):
+            # External URLs are considered valid (we don't validate them)
+            valid_count += 1
+            print(f"  External URL: {img.image_url} - assumed valid")
+        else:
+            # No file_path or image_url - definitely orphaned
+            is_orphaned = True
+            orphaned_details.append(f"No file path or URL: ID {img.id}")
+            print(f"  ❌ No file path or URL for image {img.id}")
+        
+        if is_orphaned:
+            print(f"  🗑️  Removing orphaned image: {img.id} - {img.prompt[:50]}...")
+            db.delete(img)
+            orphaned_count += 1
+    
+    if orphaned_count > 0:
+        db.commit()
+        print(f"✅ Cleanup completed: Removed {orphaned_count} orphaned images, {valid_count} valid images remain")
+    else:
+        print(f"✅ No orphaned images found, {valid_count} valid images remain")
+    
+    return {
+        "message": f"Cleanup completed",
+        "orphaned_removed": orphaned_count,
+        "valid_remaining": valid_count,
+        "orphaned_details": orphaned_details
+    }
+
 @router.post("/{project_id}/audio", response_model=AudioFileResponse)
 async def upload_audio(
     project_id: UUID,
@@ -107,7 +186,6 @@ async def upload_audio(
     
     # Generate unique filename but keep original extension
     file_extension = os.path.splitext(file.filename)[1]
-    # Use a sanitized version of the original filename + UUID for uniqueness
     import re
     safe_name = re.sub(r'[^\w\-_\.]', '_', file.filename or 'audio')
     base_name = os.path.splitext(safe_name)[0]
@@ -128,24 +206,92 @@ async def upload_audio(
     
     print(f"DEBUG: File saved successfully to: {file_path}")
     print(f"DEBUG: File exists: {os.path.exists(file_path)}")
+    print(f"DEBUG: File size on disk: {os.path.getsize(file_path) if os.path.exists(file_path) else 'N/A'}")
     
-    # Create audio file record - store the actual filename that was created
+    # ✅ ENHANCED DURATION CALCULATION WITH DEBUGGING
+    duration_seconds = None
+    
+    # Method 1: Try ffprobe first
+    try:
+        import subprocess
+        print(f"DEBUG: Trying ffprobe for duration calculation...")
+        cmd = [
+            'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+            '-of', 'csv=p=0', file_path
+        ]
+        print(f"DEBUG: ffprobe command: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        duration_str = result.stdout.strip()
+        print(f"DEBUG: ffprobe raw output: '{duration_str}'")
+        
+        if duration_str and duration_str != '':
+            duration_seconds = float(duration_str)
+            print(f"✅ SUCCESS: ffprobe calculated duration: {duration_seconds:.2f} seconds")
+        else:
+            print(f"⚠️  WARNING: ffprobe returned empty duration")
+            
+    except subprocess.CalledProcessError as e:
+        print(f"❌ ERROR: ffprobe failed with return code {e.returncode}")
+        print(f"   STDERR: {e.stderr}")
+        print(f"   STDOUT: {e.stdout}")
+    except Exception as e:
+        print(f"❌ ERROR: ffprobe exception: {e}")
+    
+    # Method 2: Try librosa if ffprobe failed
+    if duration_seconds is None:
+        try:
+            print(f"DEBUG: Trying librosa for duration calculation...")
+            import librosa
+            duration_seconds = librosa.get_duration(path=file_path)
+            print(f"✅ SUCCESS: librosa calculated duration: {duration_seconds:.2f} seconds")
+        except Exception as e:
+            print(f"❌ ERROR: librosa failed: {e}")
+    
+    # Method 3: Try alternative ffprobe command
+    if duration_seconds is None:
+        try:
+            print(f"DEBUG: Trying alternative ffprobe method...")
+            cmd = [
+                'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1', file_path
+            ]
+            print(f"DEBUG: Alternative ffprobe command: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            duration_str = result.stdout.strip()
+            print(f"DEBUG: Alternative ffprobe output: '{duration_str}'")
+            
+            if duration_str and duration_str != '':
+                duration_seconds = float(duration_str)
+                print(f"✅ SUCCESS: Alternative ffprobe duration: {duration_seconds:.2f} seconds")
+                
+        except Exception as e:
+            print(f"❌ ERROR: Alternative ffprobe failed: {e}")
+    
+    # Final fallback
+    if duration_seconds is None or duration_seconds <= 0:
+        print(f"⚠️  WARNING: All duration calculation methods failed, using fallback")
+        duration_seconds = None  # Let the database handle NULL
+    
+    print(f"🎵 FINAL DURATION: {duration_seconds}")
+    
+    # Create audio file record
     audio_file = AudioFile(
         project_id=project_id,
-        filename=file.filename,  # Keep original filename for display
-        file_path=unique_filename,  # Store the actual sanitized filename that was created
+        filename=file.filename,
+        file_path=unique_filename,
         file_size_bytes=file.size,
-        mime_type=file.content_type
+        mime_type=file.content_type,
+        duration_seconds=duration_seconds
     )
     
     db.add(audio_file)
     db.commit()
     db.refresh(audio_file)
     
-    print(f"DEBUG: Audio file record created:")
+    print(f"DEBUG: Audio file record saved:")
     print(f"  ID: {audio_file.id}")
     print(f"  filename: {audio_file.filename}")
-    print(f"  file_path: {audio_file.file_path}")
+    print(f"  duration_seconds: {audio_file.duration_seconds}")
     
     return audio_file
 

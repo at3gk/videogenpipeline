@@ -7,6 +7,7 @@ import toast from 'react-hot-toast';
 interface ImageGeneratorProps {
   projectId: string;
   onImagesSelected: (images: GeneratedImage[]) => void;
+  onImagesApproved?: (images: GeneratedImage[]) => void; // This is for approval workflow
 }
 
 interface PreviewImage {
@@ -32,6 +33,7 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
   const [previewImages, setPreviewImages] = useState<PreviewImage[]>([]);
   const [existingImages, setExistingImages] = useState<GeneratedImage[]>([]);
   const [selectedImages, setSelectedImages] = useState<Set<string>>(new Set());
+  const [selectedForVideo, setSelectedForVideo] = useState<Set<string>>(new Set()); // NEW: Track video selection
   const [showGenerateForm, setShowGenerateForm] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   
@@ -49,14 +51,65 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
   const loadExistingImages = async () => {
     setIsLoading(true);
     try {
+      console.log(`🔄 Loading images for project ${projectId}...`);
+      
+      // First, auto-cleanup any orphaned images
+      console.log('🧹 Running auto-cleanup of orphaned images...');
+      try {
+        const cleanupResult = await projectsApi.cleanupOrphanedImages(projectId);
+        
+        if (cleanupResult.orphaned_removed > 0) {
+          console.log(`Auto-cleanup removed ${cleanupResult.orphaned_removed} orphaned images`);
+          toast.success(
+            `🧹 Auto-cleanup: Removed ${cleanupResult.orphaned_removed} orphaned image${cleanupResult.orphaned_removed !== 1 ? 's' : ''} with missing files`,
+            {
+              duration: 4000,
+              style: {
+                background: '#f59e0b',
+                color: 'white',
+              }
+            }
+          );
+        } else {
+          console.log('No orphaned images found during auto-cleanup');
+        }
+        
+        // Log details if any
+        if (cleanupResult.orphaned_details && cleanupResult.orphaned_details.length > 0) {
+          console.log('Orphaned image details:', cleanupResult.orphaned_details);
+        }
+        
+      } catch (cleanupError) {
+        console.warn('Auto-cleanup failed (non-critical):', cleanupError);
+        toast.error('Auto-cleanup failed, but continuing with image loading', {
+          duration: 3000
+        });
+        // Don't fail the whole operation if cleanup fails
+      }
+      
+      // Then load the remaining valid images
+      console.log('📥 Loading remaining valid images...');
       const images = await projectsApi.getImages(projectId);
       setExistingImages(images);
       
+      console.log(`✅ Loaded ${images.length} valid images`);
+      
       if (images.length === 0) {
         setShowGenerateForm(true);
+        // ✅ FIXED: Use toast() with custom styling instead of toast.info()
+        toast('💡 No images found. Generate some images to get started!', {
+          duration: 3000,
+          icon: 'ℹ️',
+          style: {
+            background: '#3b82f6',
+            color: 'white',
+          }
+        });
       }
+      
     } catch (error) {
       console.error('Failed to load images:', error);
+      toast.error('Failed to load images. Please try refreshing.');
       setShowGenerateForm(true);
     } finally {
       setIsLoading(false);
@@ -207,6 +260,24 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
     }
   };
 
+  const handleVideoSelection = (imageId: string, isSelected: boolean) => {
+    const newSelected = new Set(selectedForVideo);
+    if (isSelected) {
+      newSelected.add(imageId);
+    } else {
+      newSelected.delete(imageId);
+    }
+    setSelectedForVideo(newSelected);
+    
+    // Send the selected images to parent (Dashboard)
+    const selectedImagesList = existingImages.filter(img => newSelected.has(img.id));
+    onImagesSelected(selectedImagesList);
+    
+    if (selectedImagesList.length > 0) {
+      toast.success(`${selectedImagesList.length} image${selectedImagesList.length !== 1 ? 's' : ''} selected for video`);
+    }
+  };
+
   const getImageUrl = (image: GeneratedImage) => {
     if (image.image_url?.startsWith('http')) {
       return image.image_url;
@@ -249,7 +320,7 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-medium text-gray-900">
-              Select Images for Video ({existingImages.length} available)
+              Select Images for Video ({existingImages.length} approved images available)
             </h3>
             <button
               onClick={() => setShowGenerateForm(!showGenerateForm)}
@@ -261,33 +332,39 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {existingImages.map((image) => {
-              const isSelected = selectedImages.has(image.id);
+              const isSelectedForVideo = selectedForVideo.has(image.id);
               const imageUrl = getImageUrl(image);
               
               return (
                 <div
                   key={image.id}
                   className={`border rounded-lg p-3 transition-all ${
-                    isSelected 
-                      ? 'border-blue-500 bg-blue-50 shadow-md' 
+                    isSelectedForVideo 
+                      ? 'border-green-500 bg-green-50 shadow-md' 
                       : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
                   }`}
                 >
+                  {/* Video Selection Checkbox */}
                   <div className="flex items-center justify-between mb-2">
-                    <button
-                      onClick={() => handleImageSelect(image.id, !isSelected)}
-                      className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                        isSelected 
-                          ? 'border-blue-500 bg-blue-500' 
-                          : 'border-gray-300 hover:border-blue-400'
-                      }`}
-                    >
-                      {isSelected && (
-                        <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                        </svg>
-                      )}
-                    </button>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => handleVideoSelection(image.id, !isSelectedForVideo)}
+                        className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+                          isSelectedForVideo 
+                            ? 'border-green-500 bg-green-500' 
+                            : 'border-gray-300 hover:border-green-400'
+                        }`}
+                      >
+                        {isSelectedForVideo && (
+                          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </button>
+                      <span className="text-sm text-green-600 font-medium">
+                        {isSelectedForVideo ? 'Selected for Video' : 'Select for Video'}
+                      </span>
+                    </div>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -302,6 +379,7 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                     </button>
                   </div>
                   
+                  {/* Image Display */}
                   <img
                     src={imageUrl}
                     alt={image.prompt}
@@ -313,9 +391,6 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                       steps: image.generation_params?.quality,
                       seed: image.generation_params?.seed
                     })}
-                    onError={(e) => {
-                      console.error('Image failed to load:', imageUrl);
-                    }}
                   />
                   
                   <p className="text-xs text-gray-700 mb-2 line-clamp-2">
@@ -330,8 +405,8 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
             })}
           </div>
 
-          {/* Selection Status */}
-          {selectedImages.size > 0 ? (
+          {/* Selection Status - UPDATED */}
+          {selectedForVideo.size > 0 ? (
             <div className="bg-green-50 border border-green-200 rounded-lg p-4">
               <div className="flex items-center space-x-3">
                 <svg className="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -339,7 +414,7 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                 </svg>
                 <div>
                   <p className="font-medium text-green-800">
-                    {selectedImages.size} image{selectedImages.size !== 1 ? 's' : ''} selected
+                    {selectedForVideo.size} image{selectedForVideo.size !== 1 ? 's' : ''} selected for video
                   </p>
                   <p className="text-sm text-green-600">
                     Ready to proceed to video composition
@@ -355,10 +430,10 @@ export const ImageGenerator: React.FC<ImageGeneratorProps> = ({
                 </svg>
                 <div>
                   <p className="font-medium text-yellow-800">
-                    No images selected
+                    No images selected for video
                   </p>
                   <p className="text-sm text-yellow-600">
-                    Please select images above or generate new ones below to continue
+                    Please select images above to include in your video
                   </p>
                 </div>
               </div>

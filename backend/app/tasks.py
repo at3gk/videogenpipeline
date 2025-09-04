@@ -1,7 +1,7 @@
 from celery import current_task
 from .celery_app import celery_app
 from .services.mock_services import get_ai_service
-from .services.video_composer import FFmpegVideoComposer, create_video_from_audio_and_images
+from .services.video_composer import FFmpegVideoComposer, create_video_from_audio_and_images, MultiAudioVideoComposer
 from .database import SessionLocal
 from .models import Project, GeneratedImage, VideoOutput, ProcessingJob, AudioFile
 from sqlalchemy.orm import Session
@@ -114,24 +114,87 @@ def compose_video_ffmpeg(self, project_id: str, composition_settings: dict):
         if not audio_file:
             raise Exception("No audio file found for this project")
         
-        # Construct full audio file path
-        if audio_file.file_path.startswith('uploads/'):
-            audio_path = audio_file.file_path
-        elif '/' in audio_file.file_path:
-            audio_path = audio_file.file_path
-        else:
-            audio_path = os.path.join("uploads", audio_file.file_path)
+        # Construct full audio file paths
+        audio_paths = []
+        total_duration = 0
         
-        if not os.path.exists(audio_path):
-            raise Exception(f"Audio file not found: {audio_path}")
+        for audio_file in audio_files:
+            if audio_file.file_path.startswith('uploads/'):
+                audio_path = audio_file.file_path
+            elif '/' in audio_file.file_path:
+                audio_path = audio_file.file_path
+            else:
+                audio_path = os.path.join("uploads", audio_file.file_path)
+            
+            if not os.path.exists(audio_path):
+                print(f"Warning: Audio file not found: {audio_path}")
+                continue
+            
+            audio_paths.append(audio_path)
+            
+            # ✅ ENHANCED DURATION HANDLING
+            stored_duration = audio_file.duration_seconds or 0
+            print(f"📊 Audio file: {audio_path}")
+            print(f"   Stored duration: {stored_duration:.2f}s")
+            
+            # If stored duration is 0, try to calculate it now
+            if stored_duration <= 0:
+                print(f"⚠️  Stored duration is 0, trying to calculate now...")
+                try:
+                    import subprocess
+                    cmd = [
+                        'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration',
+                        '-of', 'csv=p=0', audio_path
+                    ]
+                    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                    calculated_duration = float(result.stdout.strip())
+                    print(f"✅ Calculated duration: {calculated_duration:.2f}s")
+                    
+                    # Update the database with the calculated duration
+                    audio_file.duration_seconds = calculated_duration
+                    db.add(audio_file)
+                    db.commit()
+                    
+                    stored_duration = calculated_duration
+                    print(f"💾 Updated database with calculated duration")
+                    
+                except Exception as e:
+                    print(f"❌ Could not calculate duration: {e}")
+                    # Use a reasonable fallback based on file size
+                    file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+                    # Rough estimate: 1MB ≈ 1 minute for MP3
+                    fallback_duration = file_size_mb * 60
+                    stored_duration = fallback_duration
+                    print(f"🔄 Using fallback duration estimate: {fallback_duration:.2f}s")
+            
+            total_duration += stored_duration
+            print(f"Added audio file: {audio_path} ({stored_duration:.2f}s)")
+        
+        if not audio_paths:
+            raise Exception("No valid audio files found")
+        
+        print(f"Total audio duration: {total_duration:.2f} seconds from {len(audio_paths)} files")
         
         current_task.update_state(state='PROGRESS', meta={'progress': 20, 'status': 'Loading images'})
         
-        # Get selected/approved images
-        images = db.query(GeneratedImage).filter(
-            GeneratedImage.project_id == project_id,
-            GeneratedImage.status == "approved"
-        ).all()
+        # Get selected/approved images - ONLY the ones the user actually selected
+        # The frontend sends the selected image IDs in composition_settings
+        selected_image_ids = composition_settings.get('selected_image_ids', [])
+        
+        if selected_image_ids:
+            # Use only the specifically selected images
+            images = db.query(GeneratedImage).filter(
+                GeneratedImage.project_id == project_id,
+                GeneratedImage.id.in_(selected_image_ids)
+            ).all()
+            print(f"Using {len(images)} specifically selected images: {[img.id for img in images]}")
+        else:
+            # Fallback: use all approved images if no specific selection provided
+            images = db.query(GeneratedImage).filter(
+                GeneratedImage.project_id == project_id,
+                GeneratedImage.status == "approved"
+            ).all()
+            print(f"No specific image selection provided, using all {len(images)} approved images")
         
         if not images:
             raise Exception("No approved images found for this project")
@@ -367,12 +430,38 @@ def compose_video_multi_audio(self, project_id: str, composition_settings: dict)
         
         current_task.update_state(state='PROGRESS', meta={'progress': 20, 'status': 'Loading images'})
         
-        # Get selected/approved images
-        images = db.query(GeneratedImage).filter(
-            GeneratedImage.project_id == project_id,
-            GeneratedImage.status == "approved"
-        ).all()
+        # ✅ DEBUG: Log what composition_settings contains
+        print(f"🎬 DEBUG: composition_settings received:")
+        print(f"  Full settings: {composition_settings}")
+        print(f"  Looking for 'selected_image_ids' key...")
         
+        # Get selected/approved images - ONLY the ones the user actually selected
+        selected_image_ids = composition_settings.get('selected_image_ids', [])
+        print(f"📋 DEBUG: selected_image_ids = {selected_image_ids}")
+        print(f"📋 DEBUG: selected_image_ids type = {type(selected_image_ids)}")
+        print(f"📋 DEBUG: selected_image_ids length = {len(selected_image_ids) if selected_image_ids else 0}")
+        
+        if selected_image_ids and len(selected_image_ids) > 0:
+            # Use only the specifically selected images
+            print(f"✅ Using specifically selected images: {selected_image_ids}")
+            images = db.query(GeneratedImage).filter(
+                GeneratedImage.project_id == project_id,
+                GeneratedImage.id.in_(selected_image_ids)
+            ).all()
+            print(f"📊 Found {len(images)} images matching selected IDs")
+            for img in images:
+                print(f"  - Image ID: {img.id}, Prompt: {img.prompt[:50]}...")
+        else:
+            # Fallback: use all approved images if no specific selection provided
+            print("⚠️  No specific image selection provided, using all approved images as fallback")
+            images = db.query(GeneratedImage).filter(
+                GeneratedImage.project_id == project_id,
+                GeneratedImage.status == "approved"
+            ).all()
+            print(f"📊 Found {len(images)} approved images as fallback")
+            for img in images:
+                print(f"  - Fallback Image ID: {img.id}, Prompt: {img.prompt[:50]}...")
+
         if not images:
             raise Exception("No approved images found for this project")
         

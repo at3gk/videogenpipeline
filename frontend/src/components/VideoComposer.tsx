@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { GeneratedImage } from '../types';
 import { projectsApi } from '../services/api';
 import toast from 'react-hot-toast';
 
@@ -6,6 +7,7 @@ interface VideoComposerProps {
   projectId: string;
   audioFileName?: string;
   selectedImagesCount: number;
+  selectedImages?: GeneratedImage[]; // ✅ ADD THIS LINE
   isMultiAudio?: boolean; // New prop
   totalAudioDuration?: number; // New prop
   onVideoCreated?: (videoData: any) => void;
@@ -32,6 +34,7 @@ export const VideoComposer: React.FC<VideoComposerProps> = ({
   projectId, 
   audioFileName, 
   selectedImagesCount,
+  selectedImages = [], // ✅ ADD THIS LINE
   isMultiAudio = false,
   totalAudioDuration = 0,
   onVideoCreated 
@@ -99,7 +102,13 @@ export const VideoComposer: React.FC<VideoComposerProps> = ({
       toast.error('Please select audio file(s) first');
       return;
     }
-
+  
+    // ✅ DEBUG: Log what we're working with
+    console.log('🎬 Starting composition with:');
+    console.log('  selectedImages:', selectedImages);
+    console.log('  selectedImages.length:', selectedImages.length);
+    console.log('  selectedImagesCount:', selectedImagesCount);
+  
     setIsComposing(true);
     setTaskStatus({ 
       status: 'pending', 
@@ -108,14 +117,25 @@ export const VideoComposer: React.FC<VideoComposerProps> = ({
     });
     
     try {
+      // ✅ CREATE SETTINGS WITH SELECTED IMAGE IDS
+      const selectedImageIds = selectedImages.map(img => img.id);
+      console.log('📋 Selected image IDs:', selectedImageIds);
+      
+      const settingsWithSelection = {
+        ...videoSettings,
+        selected_image_ids: selectedImageIds // ✅ ADD SELECTED IMAGE IDS
+      };
+  
+      console.log('⚙️ Final composition settings:', settingsWithSelection);
+  
       // Use the enhanced API endpoint that automatically detects multi-audio
-      const response = await projectsApi.composeVideoEnhanced(projectId, videoSettings);
+      const response = await projectsApi.composeVideoEnhanced(projectId, settingsWithSelection);
       setTaskId(response.task_id);
       
       if (isMultiAudio) {
-        toast.success(`Multi-audio video composition started! Combining ${audioFileName} with ${selectedImagesCount} images. This may take several minutes...`);
+        toast.success(`Multi-audio video composition started! Using ${selectedImageIds.length} selected images with ${audioFileName}. This may take several minutes...`);
       } else {
-        toast.success('Video composition started! This may take several minutes...');
+        toast.success(`Video composition started! Using ${selectedImageIds.length} selected images. This may take several minutes...`);
       }
     } catch (error: any) {
       setIsComposing(false);

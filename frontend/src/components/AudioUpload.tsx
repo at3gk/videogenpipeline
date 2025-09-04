@@ -50,6 +50,7 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
     }
   };
 
+  // Update your handleFileUpload function:
   const handleFileUpload = async (acceptedFiles: File[]) => {
     setIsUploading(true);
     setUploadProgress(0);
@@ -61,19 +62,36 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
         const file = acceptedFiles[i];
         
         // Update progress for each file
-        setUploadProgress(((i + 0.5) / acceptedFiles.length) * 100);
+        setUploadProgress(((i + 0.3) / acceptedFiles.length) * 100);
+        
+        // Get duration before upload
+        let duration = 0;
+        try {
+          duration = await getAudioDuration(file);
+          console.log(`File ${file.name} duration: ${duration}s`);
+        } catch (error) {
+          console.warn('Could not get duration for', file.name);
+        }
+        
+        setUploadProgress(((i + 0.7) / acceptedFiles.length) * 100);
         
         const audioFile = await projectsApi.uploadAudio(projectId, file);
+        
+        // Update the audioFile object with the calculated duration if it's missing
+        if (!audioFile.duration_seconds && duration > 0) {
+          audioFile.duration_seconds = duration;
+        }
+        
         uploadedFiles.push(audioFile);
+        setUploadProgress(((i + 1) / acceptedFiles.length) * 100);
       }
-      
-      setUploadProgress(100);
       
       setExistingFiles(prev => [...prev, ...uploadedFiles]);
       setShowUploadForm(false);
       
-      // Don't auto-proceed after upload - let user select which files to use
-      toast.success(`${uploadedFiles.length} audio file${uploadedFiles.length !== 1 ? 's' : ''} uploaded! Select the files you want to use above.`);
+      // Show total duration in success message
+      const totalDuration = uploadedFiles.reduce((sum, file) => sum + (file.duration_seconds || 0), 0);
+      toast.success(`${uploadedFiles.length} audio file${uploadedFiles.length !== 1 ? 's' : ''} uploaded! Total: ${formatTime(totalDuration)}. Select files above to use.`);
     } catch (error) {
       console.error('Upload failed:', error);
       toast.error('Upload failed. Please try again.');
@@ -83,6 +101,7 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
     }
   };
 
+  // Also update your selected files display to show individual durations more clearly:
   const handleSelectFile = (audioFile: AudioFile, isSelected: boolean) => {
     let newSelected: AudioFile[];
     
@@ -99,10 +118,19 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
       const totalDuration = newSelected.reduce((sum, file) => 
         sum + (file.duration_seconds || 0), 0
       );
-      toast.success(`${newSelected.length} file${newSelected.length !== 1 ? 's' : ''} selected (${formatTime(totalDuration)} total)`);
+      
+      // Show individual durations in the toast
+      if (newSelected.length === 1) {
+        toast.success(`Audio file selected! Duration: ${formatTime(newSelected[0].duration_seconds || 0)}`);
+      } else {
+        const durationsText = newSelected.map((file, index) => 
+          `Track ${index + 1}: ${formatTime(file.duration_seconds || 0)}`
+        ).join(', ');
+        toast.success(`${newSelected.length} files selected. ${durationsText}. Total: ${formatTime(totalDuration)}`);
+      }
     }
   };
-
+  
   const handleRemoveFile = async (fileId: string) => {
     if (playingFileId === fileId) {
       handleStopAudio(fileId);
@@ -152,6 +180,25 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
     }
     
     return `${baseUrl}/uploads/${actualFilename}`;
+  };
+
+  // Add this helper function to get audio duration from file:
+  const getAudioDuration = (file: File): Promise<number> => {
+    return new Promise((resolve) => {
+      const audio = new Audio();
+      audio.preload = 'metadata';
+      
+      audio.onloadedmetadata = () => {
+        resolve(audio.duration);
+      };
+      
+      audio.onerror = () => {
+        console.warn('Could not get duration for', file.name);
+        resolve(0); // Fallback to 0 if can't determine
+      };
+      
+      audio.src = URL.createObjectURL(file);
+    });
   };
 
   const handlePlayAudio = (audioFile: AudioFile) => {
@@ -269,20 +316,23 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
             </div>
           </div>
           
-          {/* Selected Files List with Reordering */}
+          {/* Selected Files List with Individual Durations */}
           <div className="space-y-2">
             {selectedFiles.map((file, index) => (
-              <div key={file.id} className="flex items-center space-x-3 bg-white rounded p-2 border">
-                <span className="text-blue-600 font-medium text-sm">#{index + 1}</span>
-                <span className="flex-1 text-sm font-medium text-gray-900 truncate">
-                  {file.filename}
-                </span>
-                <span className="text-sm text-gray-500">
-                  {formatTime(file.duration_seconds || 0)}
-                </span>
+              <div key={file.id} className="flex items-center space-x-3 bg-white rounded p-3 border">
+                <span className="text-blue-600 font-medium text-sm min-w-[24px]">#{index + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-gray-900 truncate block">
+                    {file.filename}
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    {file.file_size_bytes && formatFileSize(file.file_size_bytes)} • 
+                    Duration: {formatTime(file.duration_seconds || 0)}
+                  </span>
+                </div>
                 <button
                   onClick={() => handleSelectFile(file, false)}
-                  className="text-red-500 hover:text-red-700 text-sm"
+                  className="text-red-500 hover:text-red-700 text-sm px-2 py-1 hover:bg-red-50 rounded"
                 >
                   Remove
                 </button>
@@ -291,9 +341,11 @@ export const AudioUpload: React.FC<AudioUploadProps> = ({
           </div>
           
           {selectedFiles.length > 1 && (
-            <p className="text-xs text-blue-600 mt-2">
-              💡 Files will be played in order to create a longer video
-            </p>
+            <div className="mt-3 p-2 bg-blue-100 rounded text-xs text-blue-700">
+              <strong>Playback Order:</strong> Files will play sequentially with smooth transitions between tracks.
+              <br />
+              <strong>Expected Video Length:</strong> {formatTime(totalSelectedDuration)} + transition time
+            </div>
           )}
         </div>
       )}

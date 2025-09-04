@@ -206,7 +206,7 @@ def generate_batch():
         data = request.get_json()
         prompt = data.get('prompt', '')
         num_images = data.get('num_images', 1)
-        negative_prompt = data.get('negative_prompt', 'blurry, low quality, distorted, ugly, bad anatomy')
+        negative_prompt = data.get('negative_prompt', 'blurry, low quality, distorted, deformed, cropped, extra limbs, bad anatomy, multiple faces, watermark, text, signature, cartoon, 3d render')
         steps = data.get('steps', 25)
         
         # Fix dimensions to be divisible by 8

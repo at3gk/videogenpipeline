@@ -140,6 +140,16 @@ export const projectsApi = {
   getVideos: (projectId: string) =>
     apiRequest<any[]>(`/api/projects/${projectId}/videos`),
 
+  cleanupOrphanedImages: (projectId: string) =>
+    apiRequest<{
+      message: string;
+      orphaned_removed: number;
+      valid_remaining: number;
+      orphaned_details: string[];
+    }>(`/api/projects/${projectId}/cleanup-orphaned-images`, {
+      method: 'POST',
+    }),
+
   // Enhanced video composition that automatically detects multi-audio
   composeVideoEnhanced: (projectId: string, settings: {
     resolution: string;

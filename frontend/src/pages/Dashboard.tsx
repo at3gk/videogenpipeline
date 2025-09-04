@@ -89,34 +89,59 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Updated to handle multiple audio files
+  // 🔧 FIXED: Updated to not automatically advance step
   const handleAudioSelected = (audioFiles: AudioFile[]) => {
     setSelectedAudioFiles(audioFiles);
     
     // Add all files to store
     audioFiles.forEach(file => addAudioFile(file));
     
+    // ✅ DON'T automatically advance step - let user choose when to proceed
     if (audioFiles.length > 0) {
       const totalDuration = audioFiles.reduce((sum, file) => sum + (file.duration_seconds || 0), 0);
-      setCurrentStep('generate');
       
       if (audioFiles.length === 1) {
-        toast.success('Audio file selected! Now select or generate images.');
+        toast.success('Audio file selected! Select more files or click "Continue to Images" when ready.');
       } else {
-        toast.success(`${audioFiles.length} audio files selected (${formatTime(totalDuration)} total)! Now select or generate images.`);
+        toast.success(`${audioFiles.length} audio files selected (${formatTime(totalDuration)} total)! Add more or continue to images.`);
       }
-    } else {
-      setCurrentStep('upload');
     }
+  };
+
+  // 🔧 NEW: Manual step advancement functions
+  const handleProceedToImages = () => {
+    if (selectedAudioFiles.length === 0) {
+      toast.error('Please select at least one audio file first');
+      return;
+    }
+
+    const totalDuration = selectedAudioFiles.reduce((sum, file) => sum + (file.duration_seconds || 0), 0);
+    setCurrentStep('generate');
+    
+    if (selectedAudioFiles.length === 1) {
+      toast.success('Now select or generate images for your music video.');
+    } else {
+      toast.success(`Ready to create images for your ${formatTime(totalDuration)} multi-track video!`);
+    }
+  };
+
+  const handleProceedToComposition = () => {
+    if (selectedImages.length === 0) {
+      toast.error('Please select at least one image first');
+      return;
+    }
+
+    setCurrentStep('compose');
+    const totalDuration = selectedAudioFiles.reduce((sum, file) => sum + (file.duration_seconds || 0), 0);
+    toast.success(`${selectedImages.length} image${selectedImages.length !== 1 ? 's' : ''} selected! Ready to compose ${formatTime(totalDuration)} video.`);
   };
 
   const handleImagesSelected = (images: GeneratedImage[]) => {
     setSelectedImages(images);
     
-    if (selectedAudioFiles.length > 0 && images.length > 0) {
-      setCurrentStep('compose');
-      const totalDuration = selectedAudioFiles.reduce((sum, file) => sum + (file.duration_seconds || 0), 0);
-      toast.success(`${images.length} image${images.length !== 1 ? 's' : ''} selected! Ready to compose ${formatTime(totalDuration)} video.`);
+    // ✅ DON'T automatically advance step here either
+    if (images.length > 0) {
+      toast.success(`${images.length} image${images.length !== 1 ? 's' : ''} selected! Click "Continue to Video Composition" when ready.`);
     }
   };
 
@@ -143,13 +168,44 @@ const Dashboard: React.FC = () => {
                 Audio Setup
               </h3>
               <p className="text-gray-600 mb-6">
-                Select one or more audio files to create your video soundtrack. Multiple files will be combined sequentially. Use the "Continue to Images" button when ready.
+                Select one or more audio files to create your video soundtrack. Multiple files will be combined sequentially.
               </p>
             </div>
+            
             <AudioUpload 
               projectId={selectedProject.id} 
               onUploadComplete={handleAudioSelected} 
             />
+
+            {/* 🔧 NEW: Manual Continue Button */}
+            {selectedAudioFiles.length > 0 && (
+              <div className="text-center pt-6 border-t">
+                <div className="mb-4">
+                  <div className="inline-flex items-center px-4 py-2 bg-green-100 border border-green-200 rounded-lg">
+                    <svg className="w-5 h-5 text-green-600 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-green-800 font-medium">
+                      {selectedAudioFiles.length} audio file{selectedAudioFiles.length !== 1 ? 's' : ''} selected
+                    </span>
+                    <span className="text-green-600 ml-2">
+                      ({formatTime(selectedAudioFiles.reduce((sum, file) => sum + (file.duration_seconds || 0), 0))})
+                    </span>
+                  </div>
+                </div>
+                
+                <button
+                  onClick={handleProceedToImages}
+                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+                >
+                  Continue to Images →
+                </button>
+                
+                <p className="text-sm text-gray-500 mt-2">
+                  Or select more audio files above to create a longer video
+                </p>
+              </div>
+            )}
           </div>
         );
       
@@ -164,10 +220,38 @@ const Dashboard: React.FC = () => {
                 Select existing images or generate new ones for your music video.
               </p>
             </div>
+            
             <ImageGenerator 
               projectId={selectedProject.id} 
               onImagesSelected={handleImagesSelected} 
             />
+
+            {/* 🔧 NEW: Manual Continue Button for Images */}
+            {selectedImages.length > 0 && (
+              <div className="text-center pt-6 border-t">
+                <div className="mb-4">
+                  <div className="inline-flex items-center px-4 py-2 bg-green-100 border border-green-200 rounded-lg">
+                    <svg className="w-5 h-5 text-green-600 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-green-800 font-medium">
+                      {selectedImages.length} image{selectedImages.length !== 1 ? 's' : ''} selected
+                    </span>
+                  </div>
+                </div>
+                
+                <button
+                  onClick={handleProceedToComposition}
+                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+                >
+                  Continue to Video Composition →
+                </button>
+                
+                <p className="text-sm text-gray-500 mt-2">
+                  Or select more images above to add variety to your video
+                </p>
+              </div>
+            )}
           </div>
         );
       
@@ -219,6 +303,7 @@ const Dashboard: React.FC = () => {
                   : `${selectedAudioFiles.length} audio files`
               }
               selectedImagesCount={selectedImages.length}
+              selectedImages={selectedImages}
               isMultiAudio={selectedAudioFiles.length > 1}
               totalAudioDuration={selectedAudioFiles.reduce((sum, file) => sum + (file.duration_seconds || 0), 0)}
               onVideoCreated={(videoData) => {
@@ -490,7 +575,7 @@ const Dashboard: React.FC = () => {
     );
   }
 
-  // Project list view
+  // Project list view (unchanged)
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
